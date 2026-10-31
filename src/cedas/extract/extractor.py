@@ -21,6 +21,7 @@ from ..domain.models import (
     ProseParagraph,
 )
 from .anchors import AnchorNotFoundError, Anchors, locate
+from .case_info import extract_case_info
 from .defendant import attach_to_case, extract_defendants
 from .rule_loader import Rule, load_rules_from, rule_versions
 
@@ -225,6 +226,7 @@ def extract(
             setattr(result.case, CASE_FIELDS[rule.field], found)
 
     result.defendants = extract_defendants(paragraphs, anchors)
+    result.warnings.extend(extract_case_info(result.case, paragraphs, result.anchors))
     attach_to_case(result.case, result.defendants)
     _attach_spans(result.defendants)
     if not result.defendants:

@@ -112,28 +112,43 @@ def ensure_data_dirs(base: Optional[Path] = None) -> Path:
     return root
 
 
-def rule_search_dirs() -> list[Path]:
-    """规则搜索路径，**低优先级在前**。
+def _search_dirs(baseline: Path, override_name: str) -> list[Path]:
+    """只读基线 + 现场覆盖两层目录，**低优先级在前**。
 
-    内网无法在线更新程序，规则修订必须能在不重新打包的前提下送达现场
-    （ADR-002 的落地方式）：
+    内网无法在线更新程序，规则、映射与模板的修订都必须能在不重新打包的
+    前提下送达现场（ADR-002 / ADR-011 的落地方式）：
 
-    1. ``<只读>/resources/rules``：随包分发的基线规则。
-    2. ``<可写>/resources/rules``：现场覆盖目录。同名文件整体替换基线规则。
+    1. ``<只读>/resources/<name>``：随包分发的基线。
+    2. ``<可写>/resources/<name>``：现场覆盖目录，同名文件整体替换基线。
 
-    之所以不直接改 ``_internal/resources``：那个目录属于安装产物，
-    用户手工改动既无记录也易被下一次覆盖抹掉；而 exe 旁的 ``resources/``
-    是显式的「本地补丁区」，备份与回滚都直观。
+    之所以不直接改 ``_internal/resources``：那个目录属于安装产物，用户手工
+    改动既无记录也易被下一次覆盖抹掉；而 exe 旁的 ``resources/`` 是显式的
+    「本地补丁区」，备份与回滚都直观。
 
     开发态下 ``APP_HOME`` 与 ``BUNDLE_DIR`` 是同一个目录，两路会指向同一处，
     故此处去重——否则加载器会把同一批文件读两遍，且「两层覆盖」的语义含糊。
     """
-    candidates = [RULES_DIR, APP_HOME / "resources" / "rules"]
+    candidates = [baseline, APP_HOME / "resources" / override_name]
     ordered: list[Path] = []
     for path in candidates:
         if path not in ordered:
             ordered.append(path)
     return ordered
+
+
+def rule_search_dirs() -> list[Path]:
+    """规则搜索路径，**低优先级在前**（基线 → 现场补丁）。"""
+    return _search_dirs(RULES_DIR, "rules")
+
+
+def mapping_search_dirs() -> list[Path]:
+    """映射表搜索路径，语义同 :func:`rule_search_dirs`。"""
+    return _search_dirs(MAPPINGS_DIR, "mappings")
+
+
+def template_search_dirs() -> list[Path]:
+    """模板搜索路径，语义同 :func:`rule_search_dirs`。"""
+    return _search_dirs(TEMPLATES_DIR, "templates")
 
 
 def describe_paths() -> dict[str, str]:
@@ -178,5 +193,7 @@ __all__ = [
     "describe_paths",
     "ensure_data_dirs",
     "is_frozen",
+    "mapping_search_dirs",
     "rule_search_dirs",
+    "template_search_dirs",
 ]

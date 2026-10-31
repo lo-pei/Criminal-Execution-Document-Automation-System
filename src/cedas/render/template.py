@@ -14,12 +14,50 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
+
+from ..config import template_search_dirs
 
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
 class UnresolvedPlaceholderError(RuntimeError):
     """模板中存在无法被上下文解析的占位符。"""
+
+
+class TemplateNotFoundError(FileNotFoundError):
+    """映射表指向的模板文件不在任何搜索目录中。"""
+
+
+def find_template(
+    name: str,
+    dirs: Optional[Sequence[Path]] = None,
+) -> Path:
+    """按文件名在只读基线 + 现场补丁两层目录中查找模板。
+
+    模板是受控材料，**不随仓库分发**（见 ``resources/templates/README.md``），
+    现场必须自己放一份。因此找不到时要报清楚「放哪里」，而不是抛 ``FileNotFoundError``
+    让用户去猜。
+    """
+    search = list(dirs) if dirs is not None else template_search_dirs()
+
+    found: Optional[Path] = None
+    for directory in search:
+        candidate = directory / name
+        if candidate.is_file():
+            found = candidate
+
+    if found is None:
+        available = sorted(
+            {path.name for directory in search if directory.is_dir()
+             for path in directory.glob("*.docx")}
+        )
+        raise TemplateNotFoundError(
+            f"未找到模板「{name}」。请把 .docx 模板放入以下任一目录："
+            f"{'、'.join(str(d) for d in search)}。"
+            f"当前可用模板：{'、'.join(available) if available else '（无）'}"
+        )
+    return found
 
 
 @dataclass
@@ -103,7 +141,9 @@ def render(
 __all__ = [
     "PLACEHOLDER_RE",
     "RenderReport",
+    "TemplateNotFoundError",
     "UnresolvedPlaceholderError",
+    "find_template",
     "lint_placeholders",
     "render",
 ]

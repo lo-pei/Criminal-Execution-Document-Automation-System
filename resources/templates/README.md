@@ -3,6 +3,22 @@
 **本目录不入库模板原件**：模板来自法院，可能含内部格式与示例数据，且属受控材料。
 `.gitignore` 已排除 `*.docx` / `*.doc`。请将模板放在本目录下的本地副本中。
 
+## 0. 合成模板（开发与 CI 用）
+
+没有法院模板时，用 `python tools/make_demo_template.py` 生成本目录下的
+`执行通知书.示例.docx`。它按《法院刑事诉讼文书样式》的通行版式排布，占位符与
+`resources/mappings/执行通知书.example.json` 一一对应，首行带「示例·合成·不得作为
+司法文书使用」标注。
+
+```bash
+python tools/make_demo_template.py          # 生成
+python tools/make_demo_template.py --check  # 校验占位符与映射表是否一致
+```
+
+拿到法院真实模板后，把它放进本目录、改映射表的 `template` 字段指向它，
+再跑 `python -m cedas render ... --dry-run` 看有无未解析占位符。**不要**用合成模板
+替代真实模板做验收——版式与字段都可能不同。
+
 ## 1. 格式要求
 
 - **必须 `.docx`。** `.doc`（二进制）无法被 docxtpl 读取。低版本办公软件存出的

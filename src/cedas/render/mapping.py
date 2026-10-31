@@ -7,18 +7,24 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+from ..config import mapping_search_dirs
 from ..domain.models import Case, Defendant, FieldValue
 from .formatting import format_cn_date, months_to_chinese
 
 
 class MappingError(ValueError):
     """映射表不合法。"""
+
+
+class MappingNotFoundError(LookupError):
+    """按文书类型找不到映射表。"""
 
 
 @dataclass
@@ -28,6 +34,43 @@ class Mapping:
     version: int = 1
     fields: dict[str, str] = field(default_factory=dict)
     notes: str = ""
+    source: Optional[Path] = None
+
+
+def find_mapping(
+    doc_type: str,
+    dirs: Optional[Sequence[Path]] = None,
+) -> Path:
+    """按文书类型定位映射表。
+
+    文件名约定 ``{文书类型}.json``，允许带用途后缀（``执行通知书.example.json``）。
+    搜索顺序与规则库同构：低优先级在前，**同名时后者覆盖前者**，现场因此可以
+    只替换「执行通知书.json」而无需改动随包分发的基线。
+    """
+    search = list(dirs) if dirs is not None else mapping_search_dirs()
+
+    found: Optional[Path] = None
+    for directory in search:
+        if not directory.is_dir():
+            continue
+        exact = directory / f"{doc_type}.json"
+        if exact.is_file():
+            found = exact
+            continue
+        candidates = sorted(directory.glob(f"{doc_type}.*.json"))
+        if candidates:
+            found = candidates[0]
+
+    if found is None:
+        available = sorted(
+            {path.name.split(".")[0] for directory in search if directory.is_dir()
+             for path in directory.glob("*.json")}
+        )
+        raise MappingNotFoundError(
+            f"未找到「{doc_type}」的映射表，查找目录：{'、'.join(str(d) for d in search)}。"
+            f"现有文书类型：{'、'.join(available) if available else '（无）'}"
+        )
+    return found
 
 
 def load(path: Path | str) -> Mapping:
@@ -44,6 +87,7 @@ def load(path: Path | str) -> Mapping:
         version=int(data.get("version", 1)),
         fields={str(k): str(v) for k, v in data["fields"].items()},
         notes=str(data.get("notes", "")),
+        source=Path(path),
     )
 
 
@@ -107,4 +151,12 @@ def build_context(case: Case, defendant: Defendant, mapping: Mapping) -> dict[st
     return context
 
 
-__all__ = ["Mapping", "MappingError", "build_context", "load", "resolve"]
+__all__ = [
+    "Mapping",
+    "MappingError",
+    "MappingNotFoundError",
+    "build_context",
+    "find_mapping",
+    "load",
+    "resolve",
+]
