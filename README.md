@@ -83,7 +83,7 @@ CEDAS 是一个**离线**的刑事执行文书生成工具。操作人员上传�
 ### 2.2 分层
 
 ```text
-ui  ──▶  storage / render / extract  ──▶  ingest / calc  ──▶  domain
+ui  ──▶  pipeline  ──▶  storage / render / extract  ──▶  ingest / calc  ──▶  domain
 ```
 
 **依赖方向严格单向向下。** `domain` 不得 import 任何上层模块，`calc` 不得 import `ingest`。违反即视为设计缺陷。
@@ -96,6 +96,7 @@ ui  ──▶  storage / render / extract  ──▶  ingest / calc  ──▶  
 | `extract/` | 锚点定位、规则加载与执行、字段字典装配 |
 | `render/` | 模板映射、docxtpl 填充、占位符校验 |
 | `storage/` | SQLite 台账、规范命名与文件归档 |
+| `pipeline.py` | 编排：一份判决书 → 几份文书、叫什么名、缺字段是否阻断 |
 | `ui/` | Tkinter 主窗口与复核面板 |
 
 ### 2.3 字段分组
@@ -134,7 +135,7 @@ ui  ──▶  storage / render / extract  ──▶  ingest / calc  ──▶  
 # 依赖（开发期）
 python -m pip install -e ".[dev]"
 
-# 跑单元测试（当前 150 项）
+# 跑单元测试（当前 172 项）
 python -m pytest -q
 
 # 命令行自检：解析刑期
@@ -145,6 +146,10 @@ python -m cedas clean "examples/S000__京0105刑初123号.txt"
 
 # 抽取字段并输出带溯源的 JSON
 python -m cedas extract "examples/S000__京0105刑初123号.txt"
+
+# 端到端出文书：抽取 → 刑期 → 填充 → 归档 → 台账（合成模板可随仓库生成）
+python tools/make_demo_template.py
+python -m cedas render "examples/S000__京0105刑初123号.pdf" --date 2026-10-31 --effective-date 2023-05-11
 
 # 现场自检：路径、依赖、可写性、规则数（支持 --json）
 python -m cedas doctor
@@ -228,9 +233,10 @@ python tools\build_offline.py
 │   ├── calc/                  # 计算层：中文刑期解析、折抵、一致性校验
 │   ├── render/                # 渲染层：模板映射、docxtpl 填充、占位符校验
 │   ├── storage/               # 存储层：SQLite 台账、文件归档
+│   ├── pipeline.py            # 端到端：判决书 → 文书，唯一知道命名与归档的地方
 │   └── ui/                    # 表现层：Tkinter 主窗口与复核面板
 ├── packaging/                 # 打包配置（PyInstaller spec 与入口薄壳）
-├── tests/                     # 单元测试与回归夹具（150 项）
+├── tests/                     # 单元测试与回归夹具（172 项）
 ├── resources/rules/           # 规则库（外部 JSON，可热替换，不随程序版本锁定）
 ├── resources/templates/       # 文书模板说明（模板原件不入库）
 ├── tools/                     # 开发工具脚本（建表、样本体检、离线打包）
@@ -246,7 +252,7 @@ python tools\build_offline.py
 ## 8. 质量保障
 
 ```bash
-python -m pytest -q                      # 150 项单元测试
+python -m pytest -q                      # 172 项单元测试
 python -m ruff check src tests tools packaging   # 静态检查，零告警
 python tools/sample_lint.py data/samples # 样本体检（识别被手工整理过的样本）
 python tools/build_offline.py --check-only       # 构建环境闸门
@@ -254,11 +260,12 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 保障项 | 机制 |
 | :--- | :--- |
-| 单元测试 | **150 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、真实文书回归、A/B 组抽取、渲染、存储 |
+| 单元测试 | **172 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、真实文书回归、A/B/D 组抽取、渲染、归档、台账 |
 | 静态检查 | `ruff`，`select = E/F/W/I/N/UP/B/SIM/RUF`，零告警 |
 | 离线守门 | `tests/test_offline_guard.py` **静态断言**运行端无网络导入——把"不联网"变成可执行断言，而非文档承诺 |
 | 双通道一致性 | 同一份合成样本同时以 `.txt` 与 `.pdf` 入库，断言两条通道的段落文本、段落类型逐条相同——把 ADR-005 从文档承诺变成测试 |
 | 真实文书回归 | 36 份公开判决书主文中，17 份载明了刑期起止日；复算与载明值吻合 16 份，唯一例外为法定羁押折减。把「刑期算得对」变成可复跑的断言 |
+| 端到端出文 | 合成判决书 → 执行通知书，断言正文含刑期起止、落款日期、书记员，且**无残留占位符**；重跑自动升版本不覆盖旧件 |
 | 3.8 兼容守门 | `ast.parse(feature_version=(3,8))` + 运行时 API 黑名单。CI 矩阵跑 3.9/3.11，本地守门覆盖 3.8 差异 |
 | 敏感数据守门 | CI 拒绝 `data/`、`*.docx`、`*.xlsx`、`*.zip` 进入版本库 |
 | 打包冒烟测试 | 产物内跑 `cedas-cli doctor --json`，校验 `ok` / `rule_count` / `frozen` |
@@ -267,9 +274,9 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 指标 | 数值 |
 | :--- | ---: |
-| 源码行数 | 3,534（`src/cedas/`，29 个模块） |
-| 测试行数 | 1,407 |
-| 工具脚本行数 | 1,676 |
+| 源码行数 | 4,421（`src/cedas/`，31 个模块） |
+| 测试行数 | 1,840 |
+| 工具脚本行数 | 1,877 |
 | 规则文件 | 2（`head_case_no.v1` / `head_court_name.v1`） |
 | 文档 | 8 篇规格 + 过程记录 |
 
@@ -282,16 +289,19 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 | `domain/` | ✅ 完成 | 数据模型与枚举已定稿，对应字段字典 v0.1 |
 | `calc/` | ✅ 完成 | 刑期解析、届满日、折抵、一致性校验 |
 | `ingest/txt_reader` | ✅ 完成 | 编码自动识别、换行归一 |
-| `ingest/pdf_reader` | 🟡 已实现未验证 | PyMuPDF `get_text("dict")` 已写，**从未在真实 PDF 上跑过** |
+| `ingest/pdf_reader` | 🟡 合成 PDF 已回归 | 页码 / 字号 / bbox 齐备，与 TXT 通道逐段一致；**未经真实判决书 PDF 验证** |
 | `ingest/cleaner` | 🟡 可用待打磨 | 软换行、日期拼接、页眉页脚、规范化已实现；**未经真实样本验证** |
-| `extract/` | 🟡 骨架 + 2 条规则 | 锚点定位可用；其余字段规则待补 |
-| `render/` | 🟡 骨架 | 映射表加载、渲染封装可用；占位符校验未实现 |
-| `storage/` | 🟡 骨架 | 建表与基础读写可用；归档命名未实现 |
+| `extract/` | 🟡 A/B/D 组已实现 | 案号、法院走规则库；身份/罪名/刑期/罚金、判决日期/审判组织/书记员/公诉机关已抽取；附加刑全谱、缓刑考验期待补 |
+| `render/` | ✅ 完成 | 映射表两层加载、模板查找、严格占位符校验、渲染封装 |
+| `storage/` | ✅ 完成 | 归档命名（非法字符/保留名/路径超长/版本号）与 SQLite 台账 |
+| `pipeline.py` | ✅ 完成 | 一条命令串起抽取 → 刑期 → 填充 → 归档 → 台账 |
 | `ui/` | 🔴 骨架 | 空窗口，未接数据流 |
 | 离线交付 | ✅ 链路验证通过 | 87.5 MB / 1020 文件 / zip 46.3 MB；**交付包需用 3.8.10 重打** |
 
-> **已运行验证**：单元测试全绿、`ruff` 零告警、打包冒烟测试通过。
-> **未验证**：所有依赖真实样本的行为——清洗命中率、规则覆盖率、模板填充正确性。**不要把"测试通过"当成"功能可用"。**
+> **已运行验证**：172 项单元测试全绿、`ruff` 零告警、打包冒烟测试通过、36 份真实判决主文的刑期回归、
+> 合成模板端到端出文并通过归档与台账。
+> **未验证**：清洗命中率、身份字段命中率、**法院真实模板的占位符兼容性**、目标机（Win7 2GB）实机耗时。
+> **不要把"测试通过"当成"功能可用"。**
 > 当前唯一的硬阻塞是需要 **20–50 份样本 TXT + 逐份人工真值**；只有 PDF 没有真值，"命中率 ≥98%" 这个指标无法计算。
 
 ---
@@ -308,6 +318,8 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 | [`05-开发与交接手册.md`](docs/05-开发与交接手册.md) | **接手必读**：当前状态、下一步、踩过的坑 | 持续更新 |
 | [`06-路线图与验收标准.md`](docs/06-路线图与验收标准.md) | 垂直切片定义与量化验收 | 已定稿 |
 | [`07-离线部署与交付.md`](docs/07-离线部署与交付.md) | **实施必读**：内网离线构建、现场拦截清单、验收单 | 已定稿 |
+| [`08-公开语料与计算回归.md`](docs/08-公开语料与计算回归.md) | 36 份真实判决主文的刑期回归、真实写法形态、待确认口径 | 已定稿 |
+| [`09-端到端渲染与归档.md`](docs/09-端到端渲染与归档.md) | 一条链路：阻断码、起算日来源、归档版本、合成模板 | 已定稿 |
 | [`journal/`](docs/journal/) | 每次工作会话的过程记录 | 追加式 |
 
 ---
