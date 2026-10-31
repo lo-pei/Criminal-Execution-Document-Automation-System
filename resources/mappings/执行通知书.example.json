@@ -1,0 +1,25 @@
+{
+  "document_type": "执行通知书",
+  "template": "执行通知书.docx",
+  "version": 1,
+  "notes": "示例映射表。字段路径对应 docs/00-字段字典-spec-v0.1.md 的英文标识。路径以 case / defendant 开头；带 _cn 后缀的是派生字段（月数转中文）。",
+  "fields": {
+    "案号": "case.case_no",
+    "法院名称": "case.court_name",
+    "被告人": "defendant.name",
+    "性别": "defendant.gender",
+    "出生日期": "defendant.birth_date",
+    "身份证号": "defendant.id_number",
+    "民族": "defendant.ethnicity",
+    "住址": "defendant.domicile",
+    "罪名": "defendant.crimes.0.charge",
+    "主刑": "defendant.merged_type",
+    "刑期": "defendant.merged_term_cn",
+    "刑期起日": "defendant.span_start",
+    "刑期止日": "defendant.span_end",
+    "释放日期": "defendant.release_date",
+    "判决日期": "case.judgment_date",
+    "生效日期": "case.effective_date",
+    "羁押场所": "defendant.detention_place"
+  }
+}

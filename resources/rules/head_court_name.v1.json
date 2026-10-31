@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "rule_id": "head_court_name",
+  "field": "court_name",
+  "layer": "head",
+  "version": 1,
+  "group": 0,
+  "pattern": "[一-鿿]{2,25}人民法院",
+  "evidence": "S001 首部第 1 段：「北京市朝阳区人民法院」。注意：页眉若未剔除会重复出现法院名称，故本规则只在锚点判定后的首部区间内生效，且取首个匹配。",
+  "updated_at": "2026-10-31",
+  "notes": "限定首部区间，避免命中正文中「经XX人民法院审理」之类表述。"
+}
