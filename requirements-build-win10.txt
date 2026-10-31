@@ -1,0 +1,23 @@
+# 构建【仅 Win10 及以上】交付包所需的固定版本。
+#
+# 何时用这份：全部 Win7 机器已退役，想换回较新的依赖与更好的运行时性能
+# （3.11 比 3.8 快约 10–25%）。否则请用 requirements-build-win7.txt——
+# 两份配方产出的功能完全一致，差别只在解释器与依赖版本。
+#
+# 构建机要求：python.org 官方 CPython **3.11 或 3.12**（64 位），
+# 安装时勾选 `tcl/tk and IDLE`。
+#
+#   python -m venv .venv-build
+#   .venv-build\Scripts\activate
+#   pip install -r requirements-build-win10.txt
+#
+# 注意 PyMuPDF 必须停在 1.x：2.0 会顺带安装 pymupdf4llm 与 pymupdf_layout，
+# 连带 onnxruntime（数百 MB），与「一键离线部署」直接冲突（ADR-004、ADR-012）。
+
+pymupdf==1.28.2
+python-docx==1.2.0
+docxtpl==0.20.2
+
+# 打包工具
+pyinstaller==6.20.0
+pyinstaller-hooks-contrib==2026.4

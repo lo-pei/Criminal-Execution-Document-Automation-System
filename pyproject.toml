@@ -7,20 +7,26 @@ name = "cedas"
 version = "0.1.0"
 description = "刑事执行文书自动制作系统（离线，规则抽取）"
 readme = "README.md"
-requires-python = ">=3.9"
+# 下界 3.8 是硬约束：目标机含 Windows 7，而 CPython 3.9 起不再支持 Win7。
+# 详见 ADR-013。升这个下界之前先确认 Win7 机器已退役。
+requires-python = ">=3.8"
 license = { text = "Proprietary" }
 authors = [{ name = "CEDAS Project" }]
 keywords = ["court", "document-automation", "offline", "rule-based-extraction"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
     "Operating System :: Microsoft :: Windows",
     "Topic :: Office/Business",
 ]
 
 # 运行端依赖保持最小：PyMuPDF + docx 栈 + 标准库 sqlite3。
-# 不得引入 numpy/pandas/torch 等重型依赖：目标机 4GB 内存。
+# 不得引入 numpy/pandas/torch 等重型依赖：目标机最低按 2GB 内存设计。
+#
+# pymupdf 下界压到 1.23 是因为 cp38 轮子只到 1.23.26（实测）；
+# 上界 <2 是因为 2.x 会连带安装 pymupdf4llm / pymupdf_layout / onnxruntime（ADR-012）。
 dependencies = [
-    "pymupdf>=1.24,<2",
+    "pymupdf>=1.23,<2",
     "python-docx>=1.1",
     "docxtpl>=0.18",
 ]
@@ -51,14 +57,14 @@ addopts = "-q --strict-markers"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py38"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
 # RUF001-003 检查「易混淆 Unicode 字符」，会把中文全角标点全部报错。
 # 本项目是中文法律文书系统，全角标点是正确写法，不是缺陷。
-# UP006/UP045 要求改用 list[] / X | None：为兼容 Python 3.9 运行环境（法院机器可能更旧），
+# UP006/UP045 要求改用 list[] / X | None：为兼容 Python 3.8 运行环境（Win7 目标机），
 # 统一保留 typing 泛型写法，这是有意选择而非遗漏。
 ignore = ["E501", "RUF001", "RUF002", "RUF003", "UP006", "UP045"]
 
@@ -66,7 +72,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003", "UP006", "UP045"]
 "tests/*" = ["S101"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.8"
 packages = ["cedas"]
 strict = false
 warn_unused_ignores = true

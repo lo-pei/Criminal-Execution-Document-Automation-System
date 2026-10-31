@@ -56,8 +56,39 @@ DEPENDENCIES = {
     "typing_extensions": "PSF-2.0",
 }
 
-# 已停止维护或在大版本上尚不稳定、不适合作为交付解释器的版本区间
-RECOMMENDED_PYTHON = ((3, 9), (3, 12))
+# 交付目标。二者功能完全一致，差别只在解释器与依赖版本。
+#
+# win7：一份包同时覆盖 Win7 与 Win10。CPython 3.9 起不再支持 Win7，故只能锁 3.8。
+#        PyMuPDF 随之下压到 1.23（cp38 轮子的最后一版）。这是默认目标。
+# win10：仅在 Win7 机器全部退役后使用，可换回 3.11/3.12 与较新依赖。
+PROFILES = {
+    "win7": {
+        "label": "Win7 + Win10 通用",
+        "python": ((3, 8), (3, 8)),
+        "requirements": "requirements-build-win7.txt",
+        "artifact_suffix": "win7-win64",
+        "forbid": {
+            "pymupdf": ("1.24", "cp38 轮子只到 1.23.x，1.24+ 需要 Python 3.9+"),
+            "pyinstaller": ("6.11", "6.11+ 不再保证 cp38 支持"),
+        },
+    },
+    "win10": {
+        "label": "仅 Win10 及以上",
+        "python": ((3, 9), (3, 12)),
+        "requirements": "requirements-build-win10.txt",
+        "artifact_suffix": "win10-win64",
+        "forbid": {},
+    },
+}
+
+
+def _detect_profile() -> str:
+    """按当前解释器推断目标：3.8 → win7，其余 → win10。
+
+    不要求人记参数。但用 3.8 解释器时绝不能默认成 win10——
+    那会产出一个「自称支持 Win10、实际也支持 Win7」的包，命名与事实不符。
+    """
+    return "win7" if sys.version_info[:2] == (3, 8) else "win10"
 
 
 class BuildError(RuntimeError):
@@ -78,15 +109,40 @@ def _read_version() -> str:
     return match.group(1)
 
 
-def preflight() -> dict[str, str]:
+def _installed_version(package: str) -> str | None:
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as pkg_version
+
+    try:
+        return pkg_version(package)
+    except PackageNotFoundError:
+        return None
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for chunk in text.split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def preflight(target: str, allow_unsupported: bool = False) -> dict[str, str]:
     """前置检查。返回环境信息快照，写入 SBOM。
 
     这里的每一项都对应一次真实翻车：
       · 32 位解释器 → 打出的包在 64 位机器上虽然能跑，但内存上限只有 2–4GB；
       · 精简版 Python 无 tkinter → exe 双击无界面，且报错在打包阶段完全看不出来；
-      · 版本过新 → 目标机 Win10 缺 UCRT 补丁时启动失败。
+      · 版本过新 → 目标机 Win10 缺 UCRT 补丁时启动失败；
+      · 目标标成 win7 却用 3.11 构建 → 产出的包在 Win7 上根本起不来。
     """
+    profile = PROFILES[target]
+    (low_major, low_minor), (high_major, high_minor) = profile["python"]
     problems: list[str] = []
+
+    log(f"交付目标：{profile['label']}（{target}）")
 
     if platform.system() != "Windows":
         problems.append(f"必须在 Windows 上构建（当前 {platform.system()}），PyInstaller 不支持交叉编译")
@@ -96,14 +152,28 @@ def preflight() -> dict[str, str]:
         problems.append("必须是 64 位解释器（当前是 32 位）")
 
     major_minor = sys.version_info[:2]
-    if major_minor < RECOMMENDED_PYTHON[0]:
-        problems.append(f"Python {major_minor[0]}.{major_minor[1]} 过旧，项目要求 >=3.9")
-    elif major_minor > RECOMMENDED_PYTHON[1]:
-        log(
-            f"注意：解释器为 Python {major_minor[0]}.{major_minor[1]}，"
-            f"建议用 {RECOMMENDED_PYTHON[1][0]}.{RECOMMENDED_PYTHON[1][1]} 构建交付版。"
-            "更高版本在老旧 Win10 上缺 UCRT 补丁时可能启动失败。"
+    if not (low_major, low_minor) <= major_minor <= (high_major, high_minor):
+        message = (
+            f"目标 {target} 要求 Python {low_major}.{low_minor}"
+            + (
+                f"–{high_major}.{high_minor}"
+                if (low_major, low_minor) != (high_major, high_minor)
+                else ""
+            )
+            + f"，当前是 {major_minor[0]}.{major_minor[1]}。\n"
+            f"        请用 {profile['requirements']} 对应的解释器重新建虚拟环境。"
         )
+        if allow_unsupported:
+            log("警告：解释器版本不在目标区间内，已按 --allow-unsupported-python 继续。")
+            log("      该产物**不可交付**，仅用于验证构建链路。")
+        else:
+            problems.append(message)
+
+    # 版本闸门：目标本身决定的硬约束，不满足时打出的包在目标机上必然失效
+    for package, (ceiling, reason) in profile.get("forbid", {}).items():
+        installed = _installed_version(package)
+        if installed and _version_tuple(installed) >= _version_tuple(ceiling):
+            problems.append(f"{package} 版本 {installed} 超出 {target} 目标上限（{reason}）")
 
     try:
         import tkinter
@@ -383,24 +453,37 @@ def write_readme(target: Path, version: str) -> None:
   2. 进入该文件夹，双击 CEDAS.exe 即可使用。
   3. 如需桌面快捷方式：右键 CEDAS.exe → 发送到 → 桌面快捷方式。
 
-  不需要安装 Python，不需要联网，不需要管理员权限。
-
 二、数据存在哪里
   台账数据库、生成的文书、归档文件都在 CEDAS.exe 同级的 data 文件夹内。
   备份时请整体复制整个 CEDAS 文件夹。
   如需把数据放到其它盘符，可设置环境变量 CEDAS_HOME 指向目标目录。
 
-三、出了问题怎么办
-  1. 双击 cedas-cli.exe 打不开程序界面，会显示自检信息：
+三、运行环境
+  支持 Windows 7 SP1 与 Windows 10（32 位系统不支持，必须是 64 位）。
+  不需要安装 Python、不需要联网、不需要管理员权限。
+
+  若本机是 Windows 7，请确认已安装以下系统补丁（多数机器已有）：
+    · KB4490628（SHA-2 代码签名支持）——缺它连程序都起不来
+    · KB2533623（DLL 加载安全策略）
+  这两项由单位信息中心统一推送；无法自行安装时请联系技术人员。
+
+四、打不开生成的文件怎么办
+  本程序生成 .docx 格式文书。
+  · Office 2010 及以上、WPS 2013 及以上：可直接打开。
+  · Office 2007：需另装「Microsoft Office 兼容包」（免费），否则无法打开 .docx。
+  · Office 2003 及更早：不支持 .docx，需先装兼容包或用 WPS 打开。
+
+五、出了问题怎么办
+  1. 双击 cedas-cli.exe（带控制台的那个），会显示自检信息：
      把屏幕上的内容截图或抄下来，交给技术人员，即可定位大部分问题。
   2. 不要手工修改 _internal 文件夹内的任何内容。
 
-四、升级规则（不必重新安装程序）
+六、升级规则（不必重新安装程序）
   把新的规则文件（.json）放到 CEDAS\\resources\\rules\\ 目录下，
   文件名与内置规则同名即覆盖。修改前的文件请先备份。
   该目录不存在时自行新建即可。
 
-五、版本
+七、版本
   当前版本：{version}
   查看方式：右键 CEDAS.exe → 属性 → 详细信息。
 """,
@@ -426,9 +509,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def make_release(app_dir: Path, version: str, sbom: dict[str, object]) -> Path:
+def make_release(
+    app_dir: Path, version: str, sbom: dict[str, object], target: str, unsafe: bool = False
+) -> Path:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    stage = RELEASE_DIR / f"CEDAS-{version}-win64"
+    suffix = PROFILES[target]["artifact_suffix"] + ("-unsupported" if unsafe else "")
+    stage = RELEASE_DIR / f"CEDAS-{version}-{suffix}"
     if stage.exists():
         _quarantine_old_output(stage)
     stage.mkdir(parents=True)
@@ -448,7 +534,7 @@ def make_release(app_dir: Path, version: str, sbom: dict[str, object]) -> Path:
             sums.append(f"{sha256(path)}  {path.relative_to(stage).as_posix()}")
     (stage / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n", encoding="utf-8")
 
-    zip_path = RELEASE_DIR / f"CEDAS-{version}-win64.zip"
+    zip_path = RELEASE_DIR / f"CEDAS-{version}-{suffix}.zip"
     if zip_path.exists():
         zip_path.unlink()
 
@@ -467,18 +553,34 @@ def make_release(app_dir: Path, version: str, sbom: dict[str, object]) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="构建 CEDAS 离线交付包")
     parser.add_argument("--check-only", action="store_true", help="只做前置检查")
+    parser.add_argument(
+        "--target",
+        choices=["auto", *PROFILES],
+        default="auto",
+        help="交付目标。auto = 按当前解释器推断（3.8 → win7，其余 → win10）",
+    )
+    parser.add_argument(
+        "--allow-unsupported-python",
+        action="store_true",
+        help="解释器版本超出目标区间仍继续（产物名会标 -unsupported，仅用于验证构建链路）",
+    )
     args = parser.parse_args(argv)
 
+    target = _detect_profile() if args.target == "auto" else args.target
     version = _read_version()
     log(f"CEDAS v{version}  构建机 Python {platform.python_version()}")
 
     try:
-        env = preflight()
+        env = preflight(target, allow_unsupported=args.allow_unsupported_python)
         if args.check_only:
             log("前置检查通过。")
             return 0
 
         sbom = collect_sbom(version, env)
+        sbom["target"] = target
+        if args.allow_unsupported_python:
+            sbom["deliverable"] = False
+            sbom["build_note"] = "解释器版本超出目标区间，本产物不可交付，仅用于验证构建链路"
         write_windows_version_file(version, PROJECT_DIR / "packaging" / "version_info.txt")
 
         app_dir = run_pyinstaller()
@@ -487,12 +589,14 @@ def main(argv: list[str] | None = None) -> int:
         file_count, total = measure_size(app_dir)
         log(f"产物：{file_count} 个文件，{total / 1024 / 1024:.1f} MB")
 
-        make_release(app_dir, version, sbom)
+        make_release(app_dir, version, sbom, target, unsafe=args.allow_unsupported_python)
 
         (RELEASE_DIR / "build-report.json").write_text(
             json.dumps(
                 {
                     "version": version,
+                    "target": target,
+                    "target_label": PROFILES[target]["label"],
                     "built_at": sbom["built_at"],
                     "file_count": file_count,
                     "uncompressed_bytes": total,

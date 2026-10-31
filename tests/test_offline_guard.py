@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -148,6 +149,59 @@ def _rule(rule_id: str, pattern: str) -> dict[str, object]:
         "evidence": "测试用",
         "updated_at": "2026-10-31",
     }
+
+
+class TestPython38Compatibility:
+    """交付解释器是 Python 3.8（目标机含 Win7，ADR-013）。
+
+    CI 矩阵里虽有 3.8，但开发者本地通常是 3.9+，写下的 3.9+ 语法要到 CI 才暴露。
+    这里把「不得使用 3.9+ 语法与运行时 API」变成本地就能跑的红线。
+    """
+
+    # 3.9+ 引入、且在 3.8 上直接报错的运行时 API。
+    # 语法层面（如 match 语句）由 test_syntax_parses_as_python38 覆盖，此处不重复做字符串匹配——
+    # `re.match(` 会被子串匹配误伤，是实测踩到的假阳性。
+    FORBIDDEN_TOKENS: ClassVar[dict[str, str]] = {
+        "slots=True": "dataclass slots 参数（3.10+）",
+        "StrEnum": "enum.StrEnum（3.11+）",
+        "functools.cache(": "functools.cache（3.9+，3.8 用 lru_cache）",
+        "zoneinfo": "zoneinfo（3.9+）",
+        "datetime.UTC": "datetime.UTC（3.11+）",
+        "typing.Self": "typing.Self（3.11+）",
+        "get_type_hints": "运行时求值注解，会让 list[X] 在 3.8 抛 TypeError",
+    }
+
+    def test_syntax_parses_as_python38(self) -> None:
+        """结构化检测 3.9+ 语法。
+
+        ``ast.parse(feature_version=(3,8))`` 会拒绝 match 语句、括号化上下文管理器等新语法，
+        且按 AST 判断，不会被 ``re.match(`` 这类同名字符串误伤。
+        """
+        failed: list[str] = []
+        for path in SRC_DIR.rglob("*.py"):
+            try:
+                ast.parse(
+                    path.read_text(encoding="utf-8"),
+                    filename=str(path),
+                    feature_version=(3, 8),
+                )
+            except SyntaxError as exc:
+                failed.append(f"{path.name}:{exc.lineno} {exc.msg}")
+        assert not failed, "以下文件无法按 Python 3.8 解析：\n  " + "\n  ".join(failed)
+
+    def test_no_python39_plus_runtime_api(self) -> None:
+        hits: list[str] = []
+        for path in SRC_DIR.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for token, reason in self.FORBIDDEN_TOKENS.items():
+                if token in text:
+                    hits.append(f"{path.name}: {token.strip()} —— {reason}")
+        assert not hits, "使用了 Python 3.8 不支持的语法/API：\n  " + "\n  ".join(hits)
+
+    def test_package_metadata_allows_python38(self) -> None:
+        """requires-python 必须放行 3.8，否则 pip 在构建机上直接拒绝安装。"""
+        pyproject = (SRC_DIR.parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+        assert 'requires-python = ">=3.8"' in pyproject
 
 
 class TestRuleOverride:
