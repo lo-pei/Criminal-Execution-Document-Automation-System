@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .config import APP_TITLE, DB_PATH, SUPPORTED_EXTENSIONS
+from .config import (
+    APP_HOME,
+    APP_TITLE,
+    DB_PATH,
+    RULES_DIR,
+    SUPPORTED_EXTENSIONS,
+    describe_paths,
+    ensure_data_dirs,
+)
 
 
 def _read_blocks(path: Path):
@@ -93,15 +101,104 @@ def _cmd_calc(args: argparse.Namespace) -> int:
 def _cmd_initdb(_args: argparse.Namespace) -> int:
     from .storage.db import Database
 
+    ensure_data_dirs()
     with Database(DB_PATH) as db:
         db.init_schema()
     print(f"台账已初始化：{DB_PATH}")
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """现场排障：打印路径、依赖版本与可写性检查。
+
+    内网机器无法远程连调，交付后第一轮问题基本都是「数据写到哪了」「依赖缺没缺」。
+    本命令要求在不联网、不打开界面的前提下给出全部判断依据。
+
+    ``--json`` 输出供构建脚本与自动化消费。**脚本不要解析中文文本**：
+    Windows 控制台代码页为 GBK，管道重定向时输出编码随环境变化，
+    按中文匹配会在构建机上莫名失败。
+    """
+    checks: list[dict[str, object]] = []
+    problems: list[str] = []
+
+    try:
+        root = ensure_data_dirs()
+        probe = root / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        checks.append({"name": "可写性", "ok": True, "detail": str(root)})
+    except OSError as exc:
+        checks.append({"name": "可写性", "ok": False, "detail": str(exc)})
+        problems.append(f"数据目录不可写：{exc}")
+
+    for module, label in (("pymupdf", "PyMuPDF"), ("docx", "python-docx"), ("docxtpl", "docxtpl")):
+        try:
+            __import__(module)
+            checks.append({"name": f"依赖 {label}", "ok": True, "detail": ""})
+        except ImportError as exc:
+            checks.append({"name": f"依赖 {label}", "ok": False, "detail": str(exc)})
+            problems.append(f"缺少依赖 {label}：{exc}")
+
+    try:
+        from .ui import launch  # noqa: F401
+
+        checks.append({"name": "依赖 Tkinter", "ok": True, "detail": ""})
+    except Exception as exc:
+        checks.append({"name": "依赖 Tkinter", "ok": False, "detail": str(exc)})
+        problems.append(f"Tkinter 不可用：{exc}")
+
+    rule_count = len(list(RULES_DIR.glob("*.json"))) + len(
+        list((APP_HOME / "resources" / "rules").glob("*.json"))
+    )
+    checks.append({"name": "规则文件", "ok": rule_count > 0, "detail": f"{rule_count} 个"})
+    if rule_count == 0:
+        problems.append("未找到任何规则文件，resources/rules 缺失或未随包分发")
+
+    ok = not problems
+
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "app": APP_TITLE,
+                    "version": __version__,
+                    "python": sys.version.split()[0],
+                    "frozen": bool(getattr(sys, "frozen", False)),
+                    "rule_count": rule_count,
+                    "paths": describe_paths(),
+                    "checks": checks,
+                    "problems": problems,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0 if ok else 1
+
+    print(f"{APP_TITLE}  v{__version__}")
+    print(f"Python {sys.version.split()[0]}   frozen={getattr(sys, 'frozen', False)}")
+    print("-" * 56)
+    for key, value in describe_paths().items():
+        print(f"{key:<18}{value}")
+    print("-" * 56)
+    for check in checks:
+        mark = "正常" if check["ok"] else "失败"
+        print(f"{check['name']!s:<18}{mark}  {check['detail']}")
+    print("-" * 56)
+    if problems:
+        print("存在问题：")
+        for item in problems:
+            print(f"  · {item}")
+        return 1
+    print("自检通过：无网络依赖，环境完整。")
+    return 0
+
+
 def _cmd_ui(_args: argparse.Namespace) -> int:
     from .ui import launch
 
+    ensure_data_dirs()
     return launch()
 
 
@@ -128,6 +225,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui_parser = subparsers.add_parser("ui", help="启动图形界面（默认）")
     ui_parser.set_defaults(func=_cmd_ui)
+
+    doctor_parser = subparsers.add_parser("doctor", help="自检：路径、依赖、可写性（现场排障用）")
+    doctor_parser.add_argument("--json", action="store_true", help="以 JSON 输出，供脚本消费")
+    doctor_parser.set_defaults(func=_cmd_doctor)
 
     return parser
 

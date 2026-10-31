@@ -5,13 +5,19 @@ __pycache__/
 .eggs/
 build/
 dist/
+dist.prev.*
+dist_exe/
 .venv/
+.venv-build/
 venv/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# PyInstaller 自动生成的临时 spec 不入库；
+# 但 packaging/cedas.spec 是手写的构建配置，必须入库（见下方例外）。
 *.spec
 
 # ---- 运行产物 ----
@@ -19,7 +25,9 @@ htmlcov/
 *.db-journal
 *.log
 output/
-dist_exe/
+
+# ---- 打包中间产物：由 tools/build_offline.py 生成，可随时重建 ----
+packaging/version_info.txt
 
 # ---- 敏感数据：真实案件材料一律不入库 ----
 data/samples/*
@@ -43,3 +51,6 @@ $RECYCLE.BIN/
 
 # ---- 本地工作区元数据（不随仓库分发） ----
 .workbuddy/
+
+# ---- 例外：必须入库的构建配置 ----
+!packaging/cedas.spec
