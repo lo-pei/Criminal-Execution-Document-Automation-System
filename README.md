@@ -38,8 +38,11 @@ python -m pytest -q
 # 命令行自检：解析刑期
 python -m cedas calc "有期徒刑三年六个月"
 
-# 清洗一份 TXT 样本，输出段落列表
-python -m cedas clean data/samples/S001__京0105刑初123号.txt
+# 清洗一份样本，输出段落列表（examples/ 内为合成样本，可随仓库分发）
+python -m cedas clean "examples/S000__京0105刑初123号.txt"
+
+# 抽取字段并输出带溯源的 JSON
+python -m cedas extract "examples/S000__京0105刑初123号.txt"
 
 # 启动图形界面（骨架）
 python -m cedas
@@ -78,6 +81,8 @@ python -m cedas
 - 一份判决书一个 `.txt`，UTF-8 编码（兼容 GBK 自动识别），保留原始换行，**不得手工整理、不得删除页眉页脚**。
 - 文件命名：`{样本编号}__{案号}.txt`，如 `S001__京0105刑初123号.txt`。样本编号与真值表一一对应。
 - 无页码信息 ⇒ 溯源字段 `page` 为 `None`，复核界面显示「段落 N」。PDF 通道接入后自动填充页码。
+
+`examples/` 下有一份**合成样本**（非真实案件），用于跑通命令与单元测试；真实样本放 `data/samples/`，不随仓库分发。
 
 完整规范见 [`docs/04-样本格式与标注规范.md`](docs/04-样本格式与标注规范.md)。
 
