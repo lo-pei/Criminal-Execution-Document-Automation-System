@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Optional
 
-from ..config import RULES_DIR
+from ..config import rule_search_dirs
 from ..domain.models import Case, ExtractionWarning, FieldValue, ProseParagraph
 from .anchors import AnchorNotFoundError, Anchors, locate
-from .rule_loader import Rule, load_rules, rule_versions
+from .rule_loader import Rule, load_rules_from, rule_versions
 
 # 规则字段 → Case 属性名。新增字段时在此登记，未登记字段会产出告警而非静默丢弃。
 CASE_FIELDS: dict[str, str] = {
@@ -98,13 +98,18 @@ def extract(
     paragraphs: Sequence[ProseParagraph],
     *,
     rules: Optional[Sequence[Rule]] = None,
-    rules_dir: Optional[Any] = None,
+    rules_dirs: Optional[Sequence[Any]] = None,
 ) -> ExtractionResult:
     """执行完整抽取。
 
     锚点定位失败时不抛异常，转为告警——上层据此阻断生成，但保留清洗结果供排查。
+    规则目录未显式指定时走 ``config.rule_search_dirs()``，即基线 + 现场补丁两层。
     """
-    rules = list(rules) if rules is not None else load_rules(rules_dir or RULES_DIR)
+    rules = (
+        list(rules)
+        if rules is not None
+        else load_rules_from(rules_dirs if rules_dirs is not None else rule_search_dirs())
+    )
 
     result = ExtractionResult(
         paragraphs=list(paragraphs),
