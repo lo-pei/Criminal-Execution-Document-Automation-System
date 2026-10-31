@@ -10,9 +10,18 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Optional
 
+from ..calc.sentence import compute_span
 from ..config import rule_search_dirs
-from ..domain.models import Case, ExtractionWarning, FieldValue, ProseParagraph
+from ..domain.enums import PrincipalType
+from ..domain.models import (
+    Case,
+    Defendant,
+    ExtractionWarning,
+    FieldValue,
+    ProseParagraph,
+)
 from .anchors import AnchorNotFoundError, Anchors, locate
+from .defendant import attach_to_case, extract_defendants
 from .rule_loader import Rule, load_rules_from, rule_versions
 
 # 规则字段 → Case 属性名。新增字段时在此登记，未登记字段会产出告警而非静默丢弃。
@@ -33,13 +42,14 @@ class ExtractionResult:
     paragraphs: list[ProseParagraph]
     anchors: Optional[Anchors]
     case: Case = field(default_factory=Case)
+    defendants: list[Defendant] = field(default_factory=list)
     warnings: list[ExtractionWarning] = field(default_factory=list)
     rules: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "case": {name: _field_to_dict(getattr(self.case, name)) for name in CASE_FIELDS.values()},
-            "defendants": [],
+            "defendants": [_defendant_to_dict(d) for d in self.defendants],
             "warnings": [
                 {"code": w.code, "message": w.message, "field": w.field} for w in self.warnings
             ],
@@ -66,6 +76,78 @@ def _field_to_dict(fv: FieldValue) -> dict[str, Any]:
             "paragraph_index": fv.provenance.paragraph_index,
             "location": fv.provenance.display_location(),
             "snippet": fv.provenance.snippet,
+        },
+    }
+
+
+_PRINCIPAL_BY_VALUE = {member.value: member for member in PrincipalType}
+
+
+def _attach_spans(defendants: Sequence[Defendant]) -> None:
+    """按主刑种类与月数计算刑期区间。
+
+    这里只**调用** calc，不做日期运算——起点取最早羁押日，未在押时为空，
+    由复核界面补录入（字段字典 C 组）。
+    """
+    for defendant in defendants:
+        principal = _PRINCIPAL_BY_VALUE.get(str(defendant.merged_type.value), PrincipalType.UNKNOWN)
+        months = defendant.merged_months.value
+        defendant.span = compute_span(
+            principal_type=principal,
+            months=months if isinstance(months, int) else None,
+            start=defendant.custody_start,
+        )
+
+
+def _defendant_to_dict(defendant: Defendant) -> dict[str, Any]:
+    """被告人序列化。日期统一转 ISO，界面与下游只认一种格式。"""
+    span = defendant.span
+
+    def iso(value):
+        return value.isoformat() if isinstance(value, date) else value
+
+    return {
+        "seq": defendant.seq,
+        "name": _field_to_dict(defendant.name),
+        "gender": _field_to_dict(defendant.gender),
+        "birth_date": _field_to_dict(defendant.birth_date),
+        "id_number": _field_to_dict(defendant.id_number),
+        "ethnicity": _field_to_dict(defendant.ethnicity),
+        "domicile": _field_to_dict(defendant.domicile),
+        "education": _field_to_dict(defendant.education),
+        "detention_place": _field_to_dict(defendant.detention_place),
+        "custody": [
+            {"type": seg.type.value, "start": iso(seg.start), "end": iso(seg.end)}
+            for seg in defendant.custody
+        ],
+        "crimes": [
+            {
+                "charge": _field_to_dict(crime.charge),
+                "principal_type": _field_to_dict(crime.principal_type),
+                "term_months": _field_to_dict(crime.term_months),
+                "additional": [
+                    {
+                        "type": extra.type.value,
+                        "fine_amount": extra.fine_amount,
+                        "raw_text": extra.raw_text,
+                    }
+                    for extra in crime.additional
+                ],
+            }
+            for crime in defendant.crimes
+        ],
+        "merged_type": _field_to_dict(defendant.merged_type),
+        "merged_months": _field_to_dict(defendant.merged_months),
+        "is_combined": defendant.is_combined,
+        "probation": {
+            "applied": _field_to_dict(defendant.probation.applied),
+            "months": _field_to_dict(defendant.probation.months),
+        },
+        "span": {
+            "start": iso(span.start),
+            "end": iso(span.end),
+            "months": span.months,
+            "consistency": span.consistency.value,
         },
     }
 
@@ -140,6 +222,18 @@ def extract(
         found = _apply_rule(rule, paragraphs, section)
         if found is not None:
             setattr(result.case, CASE_FIELDS[rule.field], found)
+
+    result.defendants = extract_defendants(paragraphs, anchors)
+    attach_to_case(result.case, result.defendants)
+    _attach_spans(result.defendants)
+    if not result.defendants:
+        result.warnings.append(
+            ExtractionWarning(
+                code="A004",
+                message="未识别到被告人：检查首部是否为「被告人姓名，性别，…出生」句式",
+                field="defendants",
+            )
+        )
 
     for name in ("case_no", "court_name"):
         if not getattr(result.case, name).is_present:
