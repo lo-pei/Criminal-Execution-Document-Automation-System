@@ -17,18 +17,22 @@ class RawBlock:
 
     属性缺失即为该通道的能力降级，而非错误：
 
-    ==========  ==========  ==============  ========
-    通道        page        font_size       bbox
-    ==========  ==========  ==============  ========
-    PDF         有          有              有
-    TXT         None        None            None
-    ==========  ==========  ==============  ========
+    ==========  ==========  ==============  ========  ============
+    通道        page        font_size       bbox      page_height
+    ==========  ==========  ==============  ========  ============
+    PDF         有          有              有        有
+    TXT         None        None            None      None
+    ==========  ==========  ==============  ========  ============
+
+    ``page_height`` 是页眉判定所必需的：仅凭纵坐标无法区分「页眉」与
+    「首页大标题」，必须换算成页面相对位置。
     """
 
     text: str
     page: Optional[int] = None
     font_size: Optional[float] = None
     bbox: Optional[tuple[float, float, float, float]] = None
+    page_height: Optional[float] = None
 
     @property
     def has_layout(self) -> bool:

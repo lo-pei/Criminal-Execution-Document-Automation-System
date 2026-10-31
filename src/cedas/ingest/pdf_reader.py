@@ -48,6 +48,7 @@ def read(path: Path | str) -> list[RawBlock]:
     try:
         for page_number, page in enumerate(document, start=1):
             page_dict = page.get_text("dict")
+            page_height = float(page.rect.height)
             for block in page_dict.get("blocks", []):
                 if block.get("type") != 0:  # 0=文本，1=图片
                     continue
@@ -73,6 +74,7 @@ def read(path: Path | str) -> list[RawBlock]:
                         page=page_number,
                         font_size=max(sizes) if sizes else None,
                         bbox=tuple(bbox) if bbox else None,
+                        page_height=page_height,
                     )
                 )
     finally:

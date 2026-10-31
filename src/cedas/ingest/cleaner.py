@@ -6,8 +6,11 @@
 处理顺序固定，不得调换：
 
 1. 字符规范化（全角数字/字母转半角、异体年份归一、中文间空格清理）
-2. 噪声剔除（页码、跨页重复的页眉页脚）
+2. 噪声剔除（页码、跨页重复的页眉页脚、按版式位置判定的页眉）
 3. 段落重建（软换行拼接、段落边界保留、日期跨行拼接、分项编号切分）
+
+第 2 步有两条路径，取决于通道能力：TXT 只能靠「跨页重复计数」，PDF 还能用
+「页面位置 + 字号」——这是双通道唯一的清洗差异，且都在本模块内完成（ADR-005）。
 """
 
 from __future__ import annotations
@@ -110,6 +113,12 @@ _CN_YEAR_DIGITS = {
 _CN_YEAR_RE = re.compile(r"([〇○ＯO零一二三四五六七八九]{4})\s*年")
 
 
+# 页眉判定：页面顶部占比、行字符上限、相对正文字号的上限比例
+_HEADER_ZONE = 0.10
+_HEADER_MAX_CHARS = 40
+_HEADER_FONT_RATIO = 0.9
+
+
 @dataclass
 class _Line:
     """中间结构：一行文本及其通道信息。"""
@@ -119,6 +128,8 @@ class _Line:
     font_size: Optional[float]
     src_index: int
     blank: bool = False
+    bbox: Optional[tuple[float, float, float, float]] = None
+    page_height: Optional[float] = None
 
 
 def normalize(text: str) -> str:
@@ -148,6 +159,8 @@ def _to_lines(blocks: Sequence[RawBlock]) -> list[_Line]:
                     font_size=block.font_size,
                     src_index=index,
                     blank=not piece.strip(),
+                    bbox=block.bbox,
+                    page_height=block.page_height,
                 )
             )
     return lines
@@ -172,6 +185,53 @@ def _repeated_texts(lines: Sequence[_Line], min_count: int = 3) -> set[str]:
         if text and len(text) <= 30 and not text.endswith(tuple(TERMINAL_PUNCT)):
             counter[text] += 1
     return {text for text, count in counter.items() if count >= min_count}
+
+
+def _header_keys(lines: Sequence[_Line], median_size: Optional[float]) -> set[tuple[str, int]]:
+    """按页面位置判定页眉，返回 (文本, 页码) 集合（PDF 通道独有）。
+
+    为什么不能只按位置删：判决书首行「XX人民法院」本身就是 22pt 大标题，
+    也在页面顶部 10% 内，位置与页眉重叠。区分二者靠两条独立线索：
+
+    * **字号**：页眉字号明显小于正文（9pt vs 14pt）。小字页眉每一页都删，
+      包括首页。
+    * **跨页重复**：字号与正文相当的老式页眉，只删第 2 页以后的出现。
+      首页那次保留——它可能就是正文标题，删掉会丢法院名。
+
+    单页文书里，小字页眉靠字号就能删；但若页眉字号与正文相当、又只出现
+    一次，两条线索都不成立，此时保留——留一行噪音可以人工忽略，误删正文
+    则不可恢复。
+    """
+    located = [line for line in lines if line.bbox and line.page_height]
+    if not located:
+        return set()
+
+    pages_by_text: dict[str, set[int]] = {}
+    for line in located:
+        text = normalize(line.text)
+        if text and len(text) <= _HEADER_MAX_CHARS and not text.endswith(tuple(TERMINAL_PUNCT)):
+            pages_by_text.setdefault(text, set()).add(line.page or 0)
+
+    keys: set[tuple[str, int]] = set()
+    for line in located:
+        text = normalize(line.text)
+        if not text or len(text) > _HEADER_MAX_CHARS:
+            continue
+        if text.endswith(tuple(TERMINAL_PUNCT)):
+            continue
+        assert line.bbox is not None and line.page_height is not None
+        if line.bbox[1] >= line.page_height * _HEADER_ZONE:
+            continue  # 不在页面顶部带内
+
+        page = line.page or 0
+        small = (
+            line.font_size is not None
+            and median_size is not None
+            and line.font_size <= median_size * _HEADER_FONT_RATIO
+        )
+        if small or (len(pages_by_text.get(text, ())) >= 2 and page > 1):
+            keys.add((text, page))
+    return keys
 
 
 def _is_page_noise(text: str) -> bool:
@@ -266,6 +326,7 @@ def clean(
     lines = _to_lines(blocks)
     median_size = _median_font_size(lines)
     running = _repeated_texts(lines) if drop_running_heads else set()
+    header_keys = _header_keys(lines, median_size) if drop_running_heads else set()
 
     paragraphs: list[ProseParagraph] = []
     buffer: list[_Line] = []
@@ -300,7 +361,7 @@ def clean(
         text = normalize(line.text)
         if not text or _is_page_noise(text):
             continue
-        if text in running:
+        if text in running or (text, line.page or 0) in header_keys:
             continue
 
         starts_new = (
@@ -320,7 +381,16 @@ def clean(
             # 标题与落款行独占一段：PDF 中它们与正文是不同文本块，不得被软换行拼在一起
             flush()
 
-        buffer.append(_Line(text, line.page, line.font_size, line.src_index))
+        buffer.append(
+            _Line(
+                text,
+                line.page,
+                line.font_size,
+                line.src_index,
+                bbox=line.bbox,
+                page_height=line.page_height,
+            )
+        )
         pending_break = False
 
     flush()

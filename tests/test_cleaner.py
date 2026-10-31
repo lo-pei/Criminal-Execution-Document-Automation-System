@@ -124,3 +124,72 @@ def test_empty_input_returns_empty_list():
 @pytest.mark.parametrize("raw", ["", "   ", "\n\n\n"])
 def test_blank_input_is_safe(raw):
     assert clean_text(raw) == []
+
+
+# ---------------------------------------------------------------------------
+# 页眉判定：PDF 通道用「页面位置 + 字号」，TXT 通道退回跨页重复计数
+# ---------------------------------------------------------------------------
+
+PAGE_HEIGHT = 842.0
+
+
+def _layout_block(text, page, size, y):
+    """构造带版式信息的块。y 是行的上沿，按 A4 页高校验相对位置。"""
+    return RawBlock(
+        text=text,
+        page=page,
+        font_size=size,
+        bbox=(72.0, y, 500.0, y + size),
+        page_height=PAGE_HEIGHT,
+    )
+
+
+def test_small_font_running_header_is_dropped_on_every_page():
+    """页眉字号小于正文时，首页与次页的页眉都要删。"""
+    blocks = [
+        _layout_block("北京市朝阳区人民法院 刑事判决书", 1, 9.0, 40.0),
+        _layout_block("北京市朝阳区人民法院", 1, 22.0, 90.0),
+        _layout_block("公诉机关北京市朝阳区人民检察院。", 1, 14.0, 200.0),
+        _layout_block("北京市朝阳区人民法院 刑事判决书", 2, 9.0, 40.0),
+        _layout_block("本院认为，其行为已构成盗窃罪。", 2, 14.0, 200.0),
+    ]
+    texts = [p.text for p in clean(blocks)]
+
+    assert "北京市朝阳区人民法院刑事判决书" not in texts
+    assert "北京市朝阳区人民法院" in texts, "22pt 大标题在顶部，但不是页眉，必须保留"
+    assert len(texts) == 3
+
+
+def test_body_font_header_only_dropped_after_first_page():
+    """页眉字号与正文相同时，靠跨页重复识别；首页那次保留，避免误删标题。"""
+    blocks = [
+        _layout_block("某某人民法院", 1, 14.0, 40.0),
+        _layout_block("公诉机关某某人民检察院。", 1, 14.0, 200.0),
+        _layout_block("某某人民法院", 2, 14.0, 40.0),
+        _layout_block("本院认为，其行为已构成盗窃罪。", 2, 14.0, 200.0),
+    ]
+    texts = [p.text for p in clean(blocks)]
+
+    assert texts.count("某某人民法院") == 1
+    assert len(texts) == 3
+
+
+def test_single_page_small_header_is_also_dropped():
+    """单页文书的小字页眉同样删掉——字号这一条线索不依赖页数。"""
+    blocks = [
+        _layout_block("北京市朝阳区人民法院 刑事判决书", 1, 9.0, 40.0),
+        _layout_block("公诉机关北京市朝阳区人民检察院。", 1, 14.0, 200.0),
+        _layout_block("现已审理终结。", 1, 14.0, 230.0),
+    ]
+    assert "北京市朝阳区人民法院刑事判决书" not in [p.text for p in clean(blocks)]
+
+
+def test_bottom_line_is_not_treated_as_footer():
+    """页面底部的正文行没有句末标点，也不得被当成页脚删掉。"""
+    blocks = [
+        _layout_block("公诉机关北京市朝阳区人民检察院。", 1, 14.0, 200.0),
+        _layout_block("被告人张三于该日被抓获归案", 1, 14.0, 780.0),
+        _layout_block("本院认为，其行为已构成盗窃罪。", 2, 14.0, 200.0),
+    ]
+    texts = [p.text for p in clean(blocks)]
+    assert any(t == "被告人张三于该日被抓获归案" for t in texts)
