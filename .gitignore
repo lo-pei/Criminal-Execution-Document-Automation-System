@@ -1,0 +1,45 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.spec
+
+# ---- 运行产物 ----
+*.db
+*.db-journal
+*.log
+output/
+dist_exe/
+
+# ---- 敏感数据：真实案件材料一律不入库 ----
+data/samples/*
+!data/samples/.gitkeep
+data/truth/*
+!data/truth/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/*.xlsx
+resources/templates/*.docx
+resources/templates/*.doc
+
+# ---- 系统与编辑器 ----
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# ---- 本地工作区元数据（不随仓库分发） ----
+.workbuddy/

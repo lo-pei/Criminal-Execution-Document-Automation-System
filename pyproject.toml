@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cedas"
+version = "0.1.0"
+description = "刑事执行文书自动制作系统（离线，规则抽取）"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "CEDAS Project" }]
+keywords = ["court", "document-automation", "offline", "rule-based-extraction"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Office/Business",
+]
+
+# 运行端依赖保持最小：PyMuPDF + docx 栈 + 标准库 sqlite3。
+# 不得引入 numpy/pandas/torch 等重型依赖：目标机 4GB 内存。
+dependencies = [
+    "pymupdf>=1.24,<2",
+    "python-docx>=1.1",
+    "docxtpl>=0.18",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "openpyxl>=3.1",
+]
+
+[project.scripts]
+cedas = "cedas.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cedas = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+# RUF001-003 检查「易混淆 Unicode 字符」，会把中文全角标点全部报错。
+# 本项目是中文法律文书系统，全角标点是正确写法，不是缺陷。
+# UP006/UP045 要求改用 list[] / X | None：为兼容 Python 3.9 运行环境（法院机器可能更旧），
+# 统一保留 typing 泛型写法，这是有意选择而非遗漏。
+ignore = ["E501", "RUF001", "RUF002", "RUF003", "UP006", "UP045"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.9"
+packages = ["cedas"]
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
