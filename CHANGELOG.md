@@ -20,6 +20,9 @@
 - PDF 通道回归：`tools/make_sample_pdf.py` 把 TXT 样本按真实版式排成合成 PDF（`examples/`），
   `tests/test_pdf_reader.py` 断言 TXT 与 PDF 两条通道的段落逐条一致
 - `RawBlock.page_height`：页眉判定需要把纵坐标换算为页面相对位置，PDF 通道填充，TXT 通道为 `None`
+- B 组抽取 `extract/defendant.py`：被告人身份（性别/出生日期/身份证号/民族/文化程度/住址/羁押场所）、
+  强制措施段（拘留→逮捕，支持「同年」省略年份）、罪名与主刑月数、罚金（中文与阿拉伯数字）、缓刑标记；
+  刑期区间按最早羁押日调用 `calc.compute_span` 计算，本层不做日期运算
 
 ### Changed
 - **解释器下界由 3.9 降至 3.8**：目标机含 Windows 7，CPython 3.9 起不再支持 Win7（ADR-013）

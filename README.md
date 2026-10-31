@@ -134,7 +134,7 @@ ui  ──▶  storage / render / extract  ──▶  ingest / calc  ──▶  
 # 依赖（开发期）
 python -m pip install -e ".[dev]"
 
-# 跑单元测试（当前 123 项）
+# 跑单元测试（当前 134 项）
 python -m pytest -q
 
 # 命令行自检：解析刑期
@@ -230,7 +230,7 @@ python tools\build_offline.py
 │   ├── storage/               # 存储层：SQLite 台账、文件归档
 │   └── ui/                    # 表现层：Tkinter 主窗口与复核面板
 ├── packaging/                 # 打包配置（PyInstaller spec 与入口薄壳）
-├── tests/                     # 单元测试与回归夹具（123 项）
+├── tests/                     # 单元测试与回归夹具（134 项）
 ├── resources/rules/           # 规则库（外部 JSON，可热替换，不随程序版本锁定）
 ├── resources/templates/       # 文书模板说明（模板原件不入库）
 ├── tools/                     # 开发工具脚本（建表、样本体检、离线打包）
@@ -245,7 +245,7 @@ python tools\build_offline.py
 ## 8. 质量保障
 
 ```bash
-python -m pytest -q                      # 123 项单元测试
+python -m pytest -q                      # 134 项单元测试
 python -m ruff check src tests tools packaging   # 静态检查，零告警
 python tools/sample_lint.py data/samples # 样本体检（识别被手工整理过的样本）
 python tools/build_offline.py --check-only       # 构建环境闸门
@@ -253,7 +253,7 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 保障项 | 机制 |
 | :--- | :--- |
-| 单元测试 | **123 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、抽取、渲染、存储 |
+| 单元测试 | **134 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、A/B 组抽取、渲染、存储 |
 | 静态检查 | `ruff`，`select = E/F/W/I/N/UP/B/SIM/RUF`，零告警 |
 | 离线守门 | `tests/test_offline_guard.py` **静态断言**运行端无网络导入——把"不联网"变成可执行断言，而非文档承诺 |
 | 双通道一致性 | 同一份合成样本同时以 `.txt` 与 `.pdf` 入库，断言两条通道的段落文本、段落类型逐条相同——把 ADR-005 从文档承诺变成测试 |
@@ -265,8 +265,8 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 指标 | 数值 |
 | :--- | ---: |
-| 源码行数 | 3,056（`src/cedas/`，28 个模块） |
-| 测试行数 | 1,097 |
+| 源码行数 | 3,495（`src/cedas/`，29 个模块） |
+| 测试行数 | 1,262 |
 | 工具脚本行数 | 1,413 |
 | 规则文件 | 2（`head_case_no.v1` / `head_court_name.v1`） |
 | 文档 | 8 篇规格 + 过程记录 |
