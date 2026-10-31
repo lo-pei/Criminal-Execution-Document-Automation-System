@@ -322,3 +322,97 @@ def test_pdf_and_txt_channels_produce_same_document(template, tmp_path):
     )
 
     assert _text(from_pdf.items[0].path) == _text(from_txt.items[0].path)
+
+
+# ---------------------------------------------------------------------------
+# prepare / plan：界面要能「只预演、不落盘」
+# ---------------------------------------------------------------------------
+
+
+def _judgment_text(tmp_path: Path) -> Path:
+    path = tmp_path / "判决书.txt"
+    path.write_text("\n".join(BASE_LINES), encoding="utf-8")
+    return path
+
+
+def test_prepare_reads_without_writing_anything(tmp_path):
+    """prepare 只读文件、只抽字段。界面选完文件就调它，不能有副作用。"""
+    from cedas.pipeline import prepare
+
+    document = prepare(_judgment_text(tmp_path))
+
+    assert document.channel == "txt"
+    assert document.defendants[0].display_name == "李四"
+    assert not (tmp_path / "out").exists()
+    assert not list(tmp_path.glob("*.docx"))
+
+
+def test_plan_reports_blockers_without_writing(tmp_path):
+    from cedas.pipeline import plan, prepare
+
+    document = prepare(_judgment_text(tmp_path))
+    report = plan(document, mapping_path=MAPPING, require_template=False)
+
+    assert report.items[0].context["被告人"] == "李四", "预演要给上下文，人工才能核对"
+    assert report.items[0].rendered is False
+    assert not (tmp_path / "out").exists()
+
+
+def test_plan_survives_a_missing_template_and_says_so(tmp_path, monkeypatch):
+    """没有模板时界面仍要能打开——否则用户连缺哪个字段都看不到。"""
+    from cedas.pipeline import plan, prepare
+    from cedas.render import template as template_module
+    from cedas.render.template import TemplateNotFoundError
+
+    empty = tmp_path / "空的模板目录"
+    empty.mkdir()
+    monkeypatch.setattr(template_module, "template_search_dirs", lambda: [empty])
+
+    document = prepare(_judgment_text(tmp_path))
+    report = plan(document, mapping_path=MAPPING, require_template=False)
+
+    assert report.template is None
+    assert any("模板" in warning for warning in report.warnings)
+
+    with pytest.raises(TemplateNotFoundError):
+        plan(document, mapping_path=MAPPING)  # 默认要求模板存在，保持原行为
+
+
+def test_plan_accepts_per_defendant_start_dates(tmp_path):
+    """多被告人时，人工指定的起算日要能逐人给。"""
+    from cedas.pipeline import plan, prepare
+
+    lines = list(BASE_LINES)
+    lines[4] = (
+        "被告人李四，男，1990年1月2日出生，公民身份号码110101199001021234，"
+        "汉族，初中文化，住北京市朝阳区某路2号。被告人王五，男，1991年2月3日出生，"
+        "公民身份号码110101199102031234，汉族，初中文化，住北京市朝阳区某路3号。"
+    )
+    path = tmp_path / "两人.txt"
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+    document = prepare(path)
+    report = plan(
+        document,
+        mapping_path=MAPPING,
+        require_template=False,
+        start_dates={1: date(2023, 4, 1)},
+    )
+
+    first = next(item for item in report.items if item.seq == 1)
+    assert first.start == date(2023, 4, 1)
+    assert first.start_source == "人工指定"
+
+
+def test_generate_with_prepared_matches_generate_with_path(template, tmp_path):
+    """界面走 prepared 复用，命令行走路径。两条路的结果必须一致。"""
+    from cedas.pipeline import prepare
+
+    source = _judgment_text(tmp_path)
+    document = prepare(source)
+
+    kwargs = dict(mapping_path=MAPPING, template_path=template, when=WHEN, record=False)
+    from_path = generate(source, output_dir=tmp_path / "a", **kwargs)
+    from_prepared = generate(prepared=document, output_dir=tmp_path / "b", **kwargs)
+
+    assert _text(from_path.items[0].path) == _text(from_prepared.items[0].path)

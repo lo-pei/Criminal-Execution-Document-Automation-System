@@ -30,11 +30,12 @@ from typing import Any, Optional
 from .calc import compute_span, resolve_start
 from .config import DB_PATH, OUTPUT_DIR, REQUIRED_FIELDS, ensure_data_dirs
 from .domain.enums import PrincipalType
-from .domain.models import Case, Defendant, SentenceSpan
+from .domain.models import Case, Defendant, ProseParagraph, SentenceSpan
 from .extract import extract
 from .ingest import read_document
 from .ingest.cleaner import clean
 from .render import build_context, find_mapping, find_template, load, render
+from .render.template import TemplateNotFoundError
 from .storage.archive import archive_path, next_version
 from .storage.db import Database
 
@@ -117,6 +118,11 @@ class PipelineReport:
     @property
     def blocked(self) -> list[DocumentItem]:
         return [item for item in self.items if not item.ok]
+
+    @property
+    def candidates(self) -> list[DocumentItem]:
+        """未被阻断、可以出文的条目。预演阶段它们 ``rendered`` 仍为 False。"""
+        return [item for item in self.items if item.ok]
 
     @property
     def ok(self) -> bool:
@@ -258,13 +264,167 @@ def _select(defendants: Sequence[Defendant], names: Optional[Sequence[str]]) -> 
     return [d for d in defendants if d.display_name in wanted]
 
 
-def generate(
-    source: Path | str,
+@dataclass
+class PreparedDocument:
+    """一份读完并抽完的判决书。
+
+    界面在「选完文件」时调一次 :func:`prepare`，之后每次改生效日期、增删被告人都只
+    重跑 :func:`plan`，不再重新解析 PDF。老机器上解析一份判决书要秒级时间，
+    每改一个日期就重读一遍文件，用起来会明显卡。
+    """
+
+    source: Path
+    channel: str
+    paragraphs: list[ProseParagraph]
+    case: Case
+    defendants: list[Defendant]
+    warnings: list[str] = field(default_factory=list)
+
+    def defendant(self, seq: int) -> Optional[Defendant]:
+        return next((d for d in self.defendants if d.seq == seq), None)
+
+
+def prepare(source: Path | str) -> PreparedDocument:
+    """读取判决书并抽取字段。**不做任何日期推算**，那属于 :func:`plan`。"""
+    path = Path(source)
+    blocks, channel = read_document(path)
+    paragraphs = clean(blocks)
+    result = extract(paragraphs)
+    return PreparedDocument(
+        source=path,
+        channel=channel,
+        paragraphs=list(paragraphs),
+        case=result.case,
+        defendants=list(result.defendants),
+        warnings=[str(w) for w in result.warnings],
+    )
+
+
+def plan(
+    document: PreparedDocument,
     *,
+    doc_type: str = DEFAULT_DOC_TYPE,
+    defendant_names: Optional[Sequence[str]] = None,
+    start_date: Optional[date] = None,
+    start_dates: Optional[dict[int, date]] = None,
+    effective_date: Optional[date] = None,
+    mapping_path: Optional[Path | str] = None,
+    template_path: Optional[Path | str] = None,
+    allow_missing: bool = False,
+    dry_run: bool = False,
+    require_template: bool = True,
+) -> PipelineReport:
+    """只算「能出什么、卡在哪」，**不落盘**。
+
+    界面靠它铺第一屏：用户还没点「生成」，也该看到每个被告人缺哪一项。
+    ``require_template=False`` 时模板缺失记告警而不抛异常——复核界面在没有模板的
+    情况下也要能打开，否则用户连「缺什么字段」都看不到，只知道程序报错。
+    """
+    case = document.case
+    if effective_date is not None:
+        case.effective_date.set(effective_date, extractor="manual@entry")
+
+    mapping = load(mapping_path) if mapping_path else load(find_mapping(doc_type))
+
+    warnings = list(document.warnings)
+    template: Optional[Path]
+    try:
+        template = Path(template_path) if template_path else find_template(mapping.template)
+    except TemplateNotFoundError as error:
+        if require_template:
+            raise
+        template = None
+        warnings.append(f"W-TEMPLATE {error}")
+
+    selected = _select(document.defendants, defendant_names)
+
+    report = PipelineReport(
+        source=document.source,
+        channel=document.channel,
+        doc_type=mapping.document_type,
+        case_no=str(case.case_no.value or ""),
+        court_name=str(case.court_name.value or ""),
+        paragraph_count=len(document.paragraphs),
+        mapping=mapping.source,
+        template=template,
+        warnings=warnings,
+        dry_run=dry_run,
+    )
+
+    if not selected:
+        report.warnings.append(
+            "A004 未识别到被告人，无法生成文书"
+            if not defendant_names
+            else f"未找到被告人：{'、'.join(defendant_names)}"
+        )
+        return report
+
+    for defendant in selected:
+        item = _plan_item(
+            case,
+            defendant,
+            mapping,
+            start_date=(start_dates or {}).get(defendant.seq, start_date),
+            effective_date=effective_date,
+        )
+        if item.blockers and allow_missing:
+            item.degraded = True
+            item.warnings.extend(f"W-DEGRADED {text}" for text in item.blockers)
+            item.blockers = []
+        report.items.append(item)
+
+    return report
+
+
+def _plan_item(
+    case: Case,
+    defendant: Defendant,
+    mapping: Any,
+    *,
+    start_date: Optional[date],
+    effective_date: Optional[date],
+) -> DocumentItem:
+    """单个被告人的阻断判定与上下文组装。"""
+    span, start_source = resolve_span(
+        case,
+        defendant,
+        start_date=start_date,
+        effective_date=effective_date,
+    )
+    # 回写到被告人身上：映射表的派生字段（起日/止日/释放日）读的是
+    # ``defendant.span``，不回写就会出现「报告说 6 月 1 日起算、文书里却是空白」。
+    defendant.span = span
+
+    item = DocumentItem(
+        seq=defendant.seq,
+        defendant=defendant.display_name,
+        start=span.start,
+        end=span.end,
+        start_source=start_source,
+    )
+    item.blockers = check_blockers(case, defendant, span)
+    if defendant.is_combined:
+        item.warnings.append("W-COMBINED 数罪并罚，决定执行刑期按主文「决定执行」部分")
+    if defendant.probation.applied.value:
+        item.warnings.append("W-PROBATION 缓刑案件是否走本系统待业务方确认（口径 P5）")
+    if start_source == "生效日期":
+        item.warnings.append("W-START-EFFECTIVE 判决书未载明起算日，已按生效日期起算")
+    if not case.effective_date.is_present:
+        item.warnings.append("W-NO-EFFECTIVE 生效日期未录入，文书该处留空（C 组需人工补）")
+
+    item.context = build_context(case, defendant, mapping)
+    return item
+
+
+def generate(
+    source: Optional[Path | str] = None,
+    *,
+    prepared: Optional[PreparedDocument] = None,
     doc_type: str = DEFAULT_DOC_TYPE,
     output_dir: Optional[Path | str] = None,
     defendant_names: Optional[Sequence[str]] = None,
     start_date: Optional[date] = None,
+    start_dates: Optional[dict[int, date]] = None,
     effective_date: Optional[date] = None,
     when: Optional[date] = None,
     mapping_path: Optional[Path | str] = None,
@@ -286,112 +446,57 @@ def generate(
         allow_missing: 核心字段缺失仍生成（降级），报告标记 ``degraded``。
         record: 是否写台账。``False`` 只出文件。
     """
-    path = Path(source)
-    blocks, channel = read_document(path)
-    paragraphs = clean(blocks)
-    result = extract(paragraphs)
+    if prepared is None and source is None:
+        raise ValueError("generate 需要 source 或 prepared 之一")
+    document = prepared if prepared is not None else prepare(source)  # type: ignore[arg-type]
 
-    case = result.case
-    if effective_date is not None:
-        case.effective_date.set(effective_date, extractor="manual@entry")
-
-    mapping = load(mapping_path) if mapping_path else load(find_mapping(doc_type))
-    template = (
-        Path(template_path) if template_path else find_template(mapping.template)
-    )
-
-    selected = _select(result.defendants, defendant_names)
-    when = when or date.today()
-    root = Path(output_dir) if output_dir is not None else OUTPUT_DIR
-
-    report = PipelineReport(
-        source=path,
-        channel=channel,
-        doc_type=mapping.document_type,
-        case_no=str(case.case_no.value or ""),
-        court_name=str(case.court_name.value or ""),
-        paragraph_count=len(paragraphs),
-        mapping=mapping.source,
-        template=template,
-        warnings=[str(w) for w in result.warnings],
+    report = plan(
+        document,
+        doc_type=doc_type,
+        defendant_names=defendant_names,
+        start_date=start_date,
+        start_dates=start_dates,
+        effective_date=effective_date,
+        mapping_path=mapping_path,
+        template_path=template_path,
+        allow_missing=allow_missing,
         dry_run=dry_run,
     )
 
-    if not selected:
-        report.warnings.append(
-            "A004 未识别到被告人，无法生成文书"
-            if not defendant_names
-            else f"未找到被告人：{'、'.join(defendant_names)}"
-        )
+    if dry_run or not report.candidates:
         return report
 
-    if not dry_run:
-        root.mkdir(parents=True, exist_ok=True)
+    _write(report, Path(output_dir) if output_dir is not None else OUTPUT_DIR, when or date.today())
 
-    for defendant in selected:
-        span, start_source = resolve_span(
-            case,
-            defendant,
-            start_date=start_date,
-            effective_date=effective_date,
-        )
-        # 回写到被告人身上：映射表的派生字段（起日/止日/释放日）读的是
-        # ``defendant.span``，不回写就会出现「报告说 6 月 1 日起算、文书里却是空白」。
-        defendant.span = span
-        item = DocumentItem(
-            seq=defendant.seq,
-            defendant=defendant.display_name,
-            start=span.start,
-            end=span.end,
-            start_source=start_source,
-        )
-        item.blockers = check_blockers(case, defendant, span)
-        if defendant.is_combined:
-            item.warnings.append("W-COMBINED 数罪并罚，决定执行刑期按主文「决定执行」部分")
-        if defendant.probation.applied.value:
-            item.warnings.append("W-PROBATION 缓刑案件是否走本系统待业务方确认（口径 P5）")
-        if start_source == "生效日期":
-            item.warnings.append("W-START-EFFECTIVE 判决书未载明起算日，已按生效日期起算")
-        if not case.effective_date.is_present:
-            item.warnings.append("W-NO-EFFECTIVE 生效日期未录入，文书该处留空（C 组需人工补）")
+    if record and report.rendered:
+        _record(report, document.case, Path(output_dir) if output_dir is not None else OUTPUT_DIR, db_path)
 
-        if item.blockers and allow_missing:
-            item.degraded = True
-            item.warnings.extend(f"W-DEGRADED {text}" for text in item.blockers)
-            item.blockers = []
+    return report
 
-        if item.blockers:
-            item.context = build_context(case, defendant, mapping)
-            report.items.append(item)
+
+def _write(report: PipelineReport, root: Path, when: date) -> None:
+    """落盘。只处理未阻断的条目；模板缺失时在这里才报错（预演阶段不抛）。"""
+    if report.template is None:
+        detail = next((w for w in report.warnings if "模板" in w), "")
+        raise TemplateNotFoundError(f"模板未就位，无法生成文书。{detail}")
+
+    root.mkdir(parents=True, exist_ok=True)
+    for item in report.items:
+        if not item.ok:
             continue
-
-        context = build_context(case, defendant, mapping)
-        item.context = context
-
-        if dry_run:
-            report.items.append(item)
-            continue
-
-        version = next_version(root, report.case_no, defendant.display_name, mapping.document_type, when)
+        version = next_version(root, report.case_no, item.defendant, report.doc_type, when)
         target = archive_path(
             root,
             report.case_no,
-            defendant.display_name,
-            mapping.document_type,
+            item.defendant,
+            report.doc_type,
             when,
             version=version,
         )
-        render(template, context, target, strict=True)
-
+        render(report.template, item.context, target, strict=True)
         item.path = target
         item.version = version
         item.rendered = True
-        report.items.append(item)
-
-    if record and not dry_run and report.rendered:
-        _record(report, case, root, db_path)
-
-    return report
 
 
 def _record(
@@ -431,7 +536,10 @@ __all__ = [
     "DEFAULT_DOC_TYPE",
     "DocumentItem",
     "PipelineReport",
+    "PreparedDocument",
     "check_blockers",
     "generate",
+    "plan",
+    "prepare",
     "resolve_span",
 ]
