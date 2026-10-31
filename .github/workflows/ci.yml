@@ -67,3 +67,14 @@ jobs:
             exit 1
           fi
           echo "OK: 未发现案件材料"
+
+      - name: 确认公开语料目录只有摘录
+        run: |
+          # data/public-corpus 允许入库，但只能放摘录（jsonl）与说明（md）。
+          # 原始判决书文件（pdf/txt/docx）一律不得入库——摘录可复核，原件是另一种风险。
+          extra=$(git ls-files data/public-corpus | grep -Ev '\.(jsonl|md)$' || true)
+          if [ -n "$extra" ]; then
+            echo "::error::public-corpus 下出现非摘录文件：$extra"
+            exit 1
+          fi
+          echo "OK: public-corpus 仅含摘录"
