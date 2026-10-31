@@ -6,13 +6,26 @@
 
 ## [Unreleased]
 
+### Added
+- 离线交付能力：`packaging/cedas.spec`（PyInstaller onedir）、`packaging/launcher.py`、`tools/build_offline.py`
+- 构建闸门：前置检查（平台/位数/Python 版本/tcl-tk/依赖/PyInstaller）、打包后冒烟测试、SBOM、SHA256 校验和
+- `cedas doctor [--json]` 子命令：路径、依赖、可写性自检，供内网现场排障
+- 规则两层加载：`<只读>/resources/rules` 基线 + `<可写>/resources/rules` 现场补丁，同名文件覆盖
+- 文档 `07-离线部署与交付`、`requirements-build.txt`
+- ADR-010（onedir 零安装交付）、ADR-011（只读/可写分离与规则覆盖）、ADR-012（固定构建环境）
+
+### Fixed
+- **`config.py` 将只读资源与可写数据混为一处**，打包后数据库与生成文书会落入 `sys._MEIPASS` 临时目录，
+  程序退出即丢失。已拆为 `BUNDLE_DIR`（只读）与 `APP_HOME`（可写，可用 `CEDAS_HOME` 覆盖）。
+- 交付 zip 缺少版本目录前缀，解压时上千文件直接铺在当前目录。
+
 ### Planned
 - 接入 PDF 通道（PyMuPDF `get_text("dict")`），恢复页码级溯源
 - 剩余首部锚点规则（出生日期、身份证号、住址、强制措施）
 - 主文锚点规则与多被告人切分
 - docxtpl 模板映射与占位符校验器
 - Tkinter 台账与复核界面
-- PyInstaller 单文件夹打包与旧机实测
+- 目标机（4GB 内存 / 旧 CPU / Win10）实机实测
 
 ## [0.1.0] - 2026-10-31
 

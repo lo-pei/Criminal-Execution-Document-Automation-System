@@ -15,7 +15,7 @@
 | 抽取方式 | 规则锚点（外部 JSON 配置 + 少量 Python 函数） |
 | 输入 | 带文本层的电子版判决书；开发期以人工提取的 TXT 替代 |
 | 输出 | `.docx` 执行文书 + 台账记录 + 归档目录 |
-| 部署 | PyInstaller 单文件夹打包，双击运行，无需安装环境 |
+| 部署 | PyInstaller **onedir** 打包，目标机零安装、双击运行、全程离线 |
 | 不做什么 | 不做 OCR、不训练模型、不引入独立数据库服务、不调用任何网络接口 |
 
 ## 2. 特性边界（v1）
@@ -50,6 +50,32 @@ python -m cedas
 
 > 运行端**不需要**执行上述任何安装步骤。发行版是打包好的可执行目录。
 
+## 3.1 构建离线交付包（法院内网用）
+
+目标机在内网、不联网，**不能下载任何基础环境**。因此构建在有网的机器上完成，产物自带解释器与全部依赖，目标机零安装。
+
+```bash
+# 构建机：Windows 64 位 + python.org 官方安装包（必须含 tcl/tk）+ 干净虚拟环境
+python -m venv .venv-build && .venv-build\Scripts\activate
+pip install -r requirements-build.txt
+
+# 1) 前置检查（20 秒内报出全部环境问题，不打包）
+python tools\build_offline.py --check-only
+
+# 2) 完整构建：打包 → 冒烟测试 → 生成 zip + SBOM + 校验和
+python tools\build_offline.py
+```
+
+产物 `dist/release/CEDAS-<version>-win64.zip`，解压到目标机后双击 `CEDAS.exe` 即可运行。
+
+三个必须知道的点：
+
+- **必须用完整安装的 Python。** 精简版 / embeddable 版不含 tcl/tk，打出的 exe 双击无界面，且打包阶段不报错。构建脚本已把该检查放在最前面。
+- **用 onedir 而非 onefile。** 法院终端管控常禁止从 `%TEMP%` 执行二进制，而 onefile 每次启动都解压到 `%TEMP%`，表现为双击无反应。详见 ADR-010。
+- **规则可现场替换，不必重新打包。** 新规则文件放进 `CEDAS\resources\rules\`（与基线同名即覆盖），重启生效。这使内网最麻烦的「改一条规则要重走一遍拷贝审批」不再成立。
+
+完整步骤、现场拦截清单与验收单见 [`docs/07-离线部署与交付.md`](docs/07-离线部署与交付.md)。
+
 ## 4. 目录结构
 
 ```
@@ -62,10 +88,11 @@ python -m cedas
 │   ├── render/                # 渲染层：模板映射、docxtpl 填充、占位符校验
 │   ├── storage/               # 存储层：SQLite 台账、文件归档
 │   └── ui/                    # 表现层：Tkinter 主窗口与复核面板
+├── packaging/                 # 打包配置（PyInstaller spec 与入口薄壳）
 ├── tests/                     # 单元测试与回归夹具
 ├── resources/rules/           # 规则库（外部 JSON，可热替换，不随程序版本锁定）
 ├── resources/templates/       # 文书模板说明（模板原件不入库）
-├── tools/                     # 开发工具脚本（建表、样本体检）
+├── tools/                     # 开发工具脚本（建表、样本体检、离线打包）
 ├── docs/                      # 规格、架构、决策、交接文档
 │   └── journal/               # 项目过程记录（按日期）
 ├── data/                      # 运行数据（已 gitignore，含敏感内容）
@@ -97,6 +124,7 @@ python -m cedas
 | [`04-样本格式与标注规范.md`](docs/04-样本格式与标注规范.md) | 样本采集与真值填写规则 | 已定稿 |
 | [`05-开发与交接手册.md`](docs/05-开发与交接手册.md) | **接手必读**：当前状态、下一步、坑 | 持续更新 |
 | [`06-路线图与验收标准.md`](docs/06-路线图与验收标准.md) | 垂直切片定义与量化验收 | 已定稿 |
+| [`07-离线部署与交付.md`](docs/07-离线部署与交付.md) | **实施必读**：内网离线构建、现场拦截清单、验收单 | 已定稿 |
 | [`journal/`](docs/journal/) | 每次工作会话的过程记录 | 追加式 |
 
 ## 7. 交给下一个 Agent
