@@ -152,6 +152,7 @@ class SentenceSpan:
     start: Optional[date] = None
     end: Optional[date] = None
     months: Optional[int] = None
+    days: int = 0
     offset_days: int = 0
     consistency: Consistency = Consistency.NOT_APPLICABLE
 
@@ -188,6 +189,9 @@ class Defendant:
     crimes: list[Crime] = field(default_factory=list)
     merged_type: FieldValue = field(default_factory=blank)
     merged_months: FieldValue = field(default_factory=blank)
+    # 「拘役一个月十五日」里的「十五日」。与 merged_months 并列，不折算成月：
+    # 折算必然引入误差，而它直接决定届满日。
+    merged_days: int = 0
     probation: Probation = field(default_factory=Probation)
     recovery: FieldValue = field(default_factory=blank)
     civil_compensation: FieldValue = field(default_factory=blank)

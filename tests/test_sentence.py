@@ -43,6 +43,25 @@ def test_single_day_sentence():
     assert compute_end_date(date(2023, 5, 10), 1) == date(2023, 6, 9)
 
 
+def test_day_component_follows_month():
+    """拘役一个月十五天：先加月，再加日，最后减 1 日。
+
+    （2026）皖0881刑初147号原文：「判处拘役一个月十五天……自2026年9月30日至
+    2026年11月13日止」。先加日再加月会得 2026-11-14，差一天。
+    """
+    assert compute_end_date(date(2026, 9, 30), 1, 15) == date(2026, 11, 13)
+
+
+def test_days_only_sentence():
+    """只写日数的短刑期（拘役十五日）也要能算，不能因为月数为零就拒绝。"""
+    assert compute_end_date(date(2026, 1, 1), 0, 15) == date(2026, 1, 15)
+
+
+def test_zero_month_and_zero_day_rejected():
+    with pytest.raises(ValueError):
+        compute_end_date(date(2026, 1, 1), 0, 0)
+
+
 def test_add_months_clamps_day():
     assert add_months(date(2023, 1, 31), 1) == date(2023, 2, 28)
 

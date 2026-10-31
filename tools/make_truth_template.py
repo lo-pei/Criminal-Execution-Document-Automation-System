@@ -211,6 +211,40 @@ INSTRUCTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+QUESTIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "起算日取哪一天",
+        "拘留日 / 逮捕日 / 其他",
+        "文书只写「先行羁押之日」。拘留与逮捕之间常隔一至数日，取错即整段刑期错位。",
+    ),
+    (
+        "生效日期怎么定",
+        "送达日 + 上诉期届满日 / 法院另出生效证明",
+        "过半判决主文不写刑期起止日，起止日只能由生效日推算，差一天即错。",
+    ),
+    (
+        "上诉期最后一日遇节假日是否顺延",
+        "顺延至节后第一个工作日 / 不顺延",
+        "同上，直接决定起算日；各地做法可能不同。",
+    ),
+    (
+        "执行通知书里刑期起止的书写格式",
+        "「自X年X月X日至Y年Y月Y日止」/ 分栏填写",
+        "模板占位符要按实际格式设计，格式变了模板就得重做。",
+    ),
+    (
+        "缓刑案件是否也走本系统",
+        "走 / 不走，另有文书",
+        "决定模板要不要做缓刑分支；缓刑不起算刑期，与实刑逻辑不同。",
+    ),
+    (
+        "数罪并罚、前罪已羁押的起算日",
+        "按实际羁押日扣减 / 按本罪羁押日 / 其他",
+        "公开文书显示各地扣减方式不一致，无法从主文反推统一规则。",
+    ),
+)
+
+
 def _write_instruction_sheet(workbook) -> None:
     sheet = workbook.active
     sheet.title = "填写说明"
@@ -398,6 +432,49 @@ def _write_enum_sheet(workbook) -> None:
     sheet.sheet_properties.tabColor = "A6A6A6"
 
 
+def _write_questions_sheet(workbook) -> None:
+    """待确认口径：公开语料推不出、只能由办案人员定的六件事。
+
+    依据见 docs/08-公开语料与计算回归.md §8。这一页不写字段，只收集口径，
+    所以不并入 A–D 四张表——填错位置比不填更麻烦。
+    """
+    sheet = workbook.create_sheet("待确认口径")
+    sheet.sheet_view.showGridLines = False
+
+    headers = ("#", "待确认事项", "常见做法", "为什么必须问", "本院口径（请在此填写）")
+    widths = (5, 26, 30, 46, 34)
+    for index, (title, width) in enumerate(zip(headers, widths), start=1):
+        cell = sheet.cell(row=1, column=index, value=title)
+        cell.font = Font(bold=True, color=XL_HEADER_FG)
+        cell.fill = PatternFill("solid", fgColor=XL_HEADER_BG)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = Border(bottom=THIN, left=THIN, right=THIN, top=THIN)
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    sheet.row_dimensions[1].height = 26
+
+    for offset, (question, common, why) in enumerate(QUESTIONS, start=1):
+        row = offset + 1
+        values = (offset, question, common, why, "")
+        for column, value in enumerate(values, start=1):
+            cell = sheet.cell(row=row, column=column, value=value)
+            cell.alignment = Alignment(
+                wrap_text=True,
+                vertical="top",
+                horizontal="center" if column == 1 else "left",
+            )
+            cell.border = Border(bottom=THIN, left=THIN, right=THIN, top=THIN)
+            if column == 5:
+                cell.fill = PatternFill("solid", fgColor=XL_INPUT_BG)
+            elif offset % 2 == 0:
+                cell.fill = PatternFill("solid", fgColor=XL_KEY_BG)
+        if offset == 1:
+            sheet.cell(row=row, column=2).font = Font(bold=True, color=XL_WARN)
+        lines = max(len(why) // 22, len(common) // 15, 2)
+        sheet.row_dimensions[row].height = 17 * min(lines, 5)
+
+    sheet.freeze_panes = "A2"
+
+
 def build(output: Path, *, rows: int = DEFAULT_ROWS, samples: int = DEFAULT_SAMPLES) -> Path:
     workbook = openpyxl.Workbook()
     workbook.properties.title = "CEDAS 真值填写表"
@@ -406,6 +483,7 @@ def build(output: Path, *, rows: int = DEFAULT_ROWS, samples: int = DEFAULT_SAMP
     _write_instruction_sheet(workbook)
     for name, fields, _description in SHEETS:
         _write_data_sheet(workbook, name, fields, rows=rows, samples=samples)
+    _write_questions_sheet(workbook)
     _write_field_sheet(workbook)
     _write_enum_sheet(workbook)
 
@@ -429,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     output = build(Path(args.output), rows=args.rows, samples=args.samples)
     total = sum(len(fields) for _name, fields, _d in SHEETS)
     print(f"已生成 {output}")
-    print("工作表：填写说明、A-主体、B-量刑、C-刑期、D-程序、字段说明、枚举值")
+    print("工作表：填写说明、A-主体、B-量刑、C-刑期、D-程序、待确认口径、字段说明、枚举值")
     print(f"字段定义 {total} 条，预留 {args.rows} 行（覆盖 {args.samples} 份样本 × 2 名被告人）")
     return 0
 

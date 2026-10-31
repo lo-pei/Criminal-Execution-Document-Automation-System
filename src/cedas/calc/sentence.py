@@ -38,17 +38,28 @@ def add_months(start: date, months: int) -> date:
     return date(year, month, day)
 
 
-def compute_end_date(start: date, months: int) -> date:
+def compute_end_date(start: date, months: int, days: int = 0) -> date:
     """计算刑期届满日。
 
-    届满日 = 起算日 + 刑期 − 1 日。
+    届满日 = 起算日 + 刑期 − 1 日；刑期含「月」「日」两个分量时，
+    **先加月、再加日、最后减 1 日**。
+
+    顺序不是随意定的：（2026）皖0881刑初147号「拘役一个月十五天」，
+    自 2026-09-30 起至 2026-11-13 止——按先月后日得 2026-11-13（吻合），
+    按先日后月得 2026-11-14（差一天）。
 
     >>> compute_end_date(date(2023, 1, 1), 48).isoformat()
     '2026-12-31'
+    >>> compute_end_date(date(2026, 9, 30), 1, 15).isoformat()
+    '2026-11-13'
     """
-    if months <= 0:
-        raise ValueError("刑期月数必须为正")
-    return add_months(start, months) - timedelta(days=1)
+    if months < 0:
+        raise ValueError("刑期月数不得为负")
+    if days < 0:
+        raise ValueError("刑期日数不得为负")
+    if months == 0 and days == 0:
+        raise ValueError("刑期月数与日数不能同时为零")
+    return add_months(start, months) + timedelta(days=days - 1)
 
 
 def compute_release_date(end: date) -> date:
@@ -92,6 +103,7 @@ def compute_span(
     principal_type: PrincipalType,
     months: Optional[int],
     start: Optional[date],
+    days: int = 0,
     custody_days: int = 0,
 ) -> SentenceSpan:
     """计算完整刑期区间。
@@ -102,12 +114,12 @@ def compute_span(
     if (
         principal_type not in (PrincipalType.CONTROL, PrincipalType.DETENTION, PrincipalType.FIXED_TERM)
         or months is None
-        or months <= 0
+        or (months <= 0 and days <= 0)
         or start is None
     ):
-        return SentenceSpan(months=months, consistency=Consistency.NOT_APPLICABLE)
+        return SentenceSpan(months=months, days=days, consistency=Consistency.NOT_APPLICABLE)
 
-    end = compute_end_date(start, months)
+    end = compute_end_date(start, months, days)
     applied = offset_days(principal_type, custody_days)
 
     # 有期徒刑/拘役的羁押期已含在起算日里，不能再扣；只有管制需要额外扣减
@@ -118,6 +130,7 @@ def compute_span(
         start=start,
         end=end,
         months=months,
+        days=days,
         offset_days=applied,
         consistency=Consistency.NOT_APPLICABLE,
     )

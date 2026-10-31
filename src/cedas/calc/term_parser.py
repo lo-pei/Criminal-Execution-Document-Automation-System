@@ -39,6 +39,9 @@ _TYPE_PATTERN = re.compile(r"(有期徒刑|无期徒刑|拘役|管制|死刑)")
 _NUM = r"([0-9]+|[零〇○一二三四五六七八九十百两]+)"
 _YEAR_PATTERN = re.compile(_NUM + r"\s*年")
 _MONTH_PATTERN = re.compile(_NUM + r"\s*个?月")
+# 「日」「天」两种写法在实务中都常见：「拘役一个月十五日」「拘役一个月十五天」。
+# 这个分量必须单独取，不能并入月数——真实判决里它直接决定届满日相差半个月。
+_DAY_PATTERN = re.compile(_NUM + r"\s*[日天]")
 
 # 遇到这些字符即认为刑期表述结束（后面是附加刑、缓刑等内容）
 _BODY_TERMINATORS = ("，", ",", "。", "；", ";", "缓刑")
@@ -48,6 +51,10 @@ _BODY_TERMINATORS = ("，", ",", "。", "；", ";", "缓刑")
 class ParsedTerm:
     """刑期解析结果。
 
+    ``months`` 与 ``days`` 是**并列的两个分量**，不是折算关系：
+    「拘役一个月十五日」= 1 个月 + 15 日，届满日按「先加月、再加日、再减 1 日」
+    计算。实测（2026）皖0881刑初147号等真实文书，先加日再加月会差一天。
+
     ``months`` 为 ``None`` 表示无确定期限（无期徒刑、死刑）。
     """
 
@@ -55,6 +62,7 @@ class ParsedTerm:
     months: Optional[int]
     raw: str
     suspended: bool = False
+    days: int = 0
 
 
 def cn_number_to_int(text: str) -> int:
@@ -96,11 +104,13 @@ def parse_term(text: str) -> ParsedTerm:
 
     >>> parse_term("有期徒刑三年六个月").months
     42
+    >>> parse_term("拘役一个月十五日").days
+    15
     >>> parse_term("无期徒刑").months is None
     True
 
     Raises:
-        TermParseError: 找不到主刑关键词，或有期限的主刑缺少年月数字。
+        TermParseError: 找不到主刑关键词，或有期限的主刑缺少年月日数字。
     """
     if not text or not text.strip():
         raise TermParseError("空字符串")
@@ -121,17 +131,21 @@ def parse_term(text: str) -> ParsedTerm:
 
     years = 0
     months = 0
+    days = 0
     year_match = _YEAR_PATTERN.search(body)
     if year_match:
         years = cn_number_to_int(year_match.group(1))
     month_match = _MONTH_PATTERN.search(body)
     if month_match:
         months = cn_number_to_int(month_match.group(1))
+    day_match = _DAY_PATTERN.search(body)
+    if day_match:
+        days = cn_number_to_int(day_match.group(1))
 
-    if years == 0 and months == 0:
-        raise TermParseError(f"有期限主刑缺少年月数字：{raw!r}")
+    if years == 0 and months == 0 and days == 0:
+        raise TermParseError(f"有期限主刑缺少年月日数字：{raw!r}")
 
-    return ParsedTerm(principal, years * 12 + months, raw)
+    return ParsedTerm(principal, years * 12 + months, raw, days=days)
 
 
 __all__ = ["ParsedTerm", "TermParseError", "cn_number_to_int", "parse_term"]

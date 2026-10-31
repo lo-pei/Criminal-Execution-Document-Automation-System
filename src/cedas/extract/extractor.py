@@ -95,6 +95,7 @@ def _attach_spans(defendants: Sequence[Defendant]) -> None:
         defendant.span = compute_span(
             principal_type=principal,
             months=months if isinstance(months, int) else None,
+            days=defendant.merged_days,
             start=defendant.custody_start,
         )
 

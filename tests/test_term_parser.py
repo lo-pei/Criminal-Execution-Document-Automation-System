@@ -63,6 +63,36 @@ def test_prefix_text_is_tolerated():
     assert parse_term("决定执行有期徒刑五年").months == 60
 
 
+@pytest.mark.parametrize(
+    ("text", "months", "days"),
+    [
+        ("拘役一个月十五日", 1, 15),
+        ("拘役一个月十五天", 1, 15),
+        ("拘役二个月二十日", 2, 20),
+        ("拘役十五日", 0, 15),
+        ("有期徒刑三年六个月", 42, 0),
+        ("有期徒刑十年", 120, 0),
+    ],
+)
+def test_day_component_is_kept_separate(text, months, days):
+    """「日」是独立分量，不折算成月。
+
+    真实判决里「拘役一个月十五日」「拘役一个月十五天」两种写法并存
+    （见（2026）皖0881刑初147号、（2026）晋0522刑初160号）。折算必然引入误差，
+    而这个分量直接决定届满日相差半个月。
+    """
+    parsed = parse_term(text)
+    assert parsed.months == months
+    assert parsed.days == days
+
+
+def test_day_component_stops_at_probation():
+    """「缓刑」之后的数字不属于刑期，不能被当成日分量。"""
+    parsed = parse_term("拘役一个月十五日，缓刑二个月")
+    assert parsed.months == 1
+    assert parsed.days == 15
+
+
 @pytest.mark.parametrize("text", ["", "   ", "罚金五千元", "有期徒刑"])
 def test_invalid_terms_raise(text):
     with pytest.raises(TermParseError):

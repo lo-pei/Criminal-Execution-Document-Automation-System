@@ -85,13 +85,15 @@ def _cmd_calc(args: argparse.Namespace) -> int:
     parsed = parse_term(args.term)
     print(f"主刑：{parsed.principal_type.value}")
     print(f"月数：{parsed.months if parsed.months is not None else '无确定期限'}")
+    if parsed.days:
+        print(f"日数：{parsed.days}")
 
     if parsed.months:
-        print(f"中文刑期：{months_to_chinese(parsed.months)}")
+        print(f"中文刑期：{months_to_chinese(parsed.months, parsed.days)}")
 
     if args.start and parsed.months:
         start = date.fromisoformat(args.start)
-        end = compute_end_date(start, parsed.months)
+        end = compute_end_date(start, parsed.months, parsed.days)
         print(f"起算日：{start.isoformat()}")
         print(f"届满日：{end.isoformat()}")
         print(f"释放日：{compute_release_date(end).isoformat()}")

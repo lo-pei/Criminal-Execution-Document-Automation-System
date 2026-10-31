@@ -300,6 +300,7 @@ def _apply_body(defendant: Defendant, body: Sequence[ProseParagraph]) -> None:
             defendant.merged_type = _fv(parsed.principal_type.value, paragraph, "body_merged@v1")
             if parsed.months is not None:
                 defendant.merged_months = _fv(parsed.months, paragraph, "body_merged@v1")
+            defendant.merged_days = parsed.days
 
         fine = _FINE_RE.search(text)
         if fine and defendant.crimes:

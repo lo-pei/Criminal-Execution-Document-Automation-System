@@ -32,8 +32,8 @@ def _section_to_chinese(number: int) -> str:
     return prefix if ones == 0 else prefix + _CN_DIGITS[ones]
 
 
-def months_to_chinese(months: Optional[int]) -> str:
-    """月数转刑期书写。
+def months_to_chinese(months: Optional[int], days: int = 0) -> str:
+    """月数与日数转刑期书写。
 
     >>> months_to_chinese(42)
     '三年六个月'
@@ -41,16 +41,20 @@ def months_to_chinese(months: Optional[int]) -> str:
     '十年'
     >>> months_to_chinese(10)
     '十个月'
+    >>> months_to_chinese(1, 15)
+    '一个月十五日'
     """
-    if months is None or months <= 0:
+    if (months is None or months <= 0) and days <= 0:
         return ""
 
-    years, rest = divmod(months, 12)
+    years, rest = divmod(months or 0, 12)
     parts = []
     if years:
         parts.append(f"{_section_to_chinese(years)}年")
     if rest:
         parts.append(f"{_section_to_chinese(rest)}个月")
+    if days:
+        parts.append(f"{_section_to_chinese(days) if 0 < days < 100 else days}日")
     return "".join(parts)
 
 
