@@ -15,3 +15,7 @@
 *.pdf    binary
 *.png    binary
 *.jpg    binary
+
+# GitHub 语言统计：PyInstaller spec 本质是 Python 脚本，按 Python 计，
+# 避免仓库语言条出现未识别的 "Other"。
+packaging/*.spec linguist-language=Python
