@@ -2,7 +2,7 @@
 
 > 法院内网、全程离线运行的刑事执行文书生成工具。上传刑事判决书 → 抽取字段 → 填入执行文书模板 → 规范命名归档。
 
-**版本** `v0.1.0`　|　**阶段** 骨架与契约（P0）　|　**运行约束** 离线 · 纯 CPU · 4GB 内存 · 无 OCR · 无大模型
+**版本** `v0.1.0`　|　**阶段** 骨架与契约（P0）　|　**运行约束** 离线 · Win7/Win10 · 纯 CPU · 内存按 2GB 设计 · 无 OCR · 无大模型
 
 ---
 
@@ -54,10 +54,12 @@ python -m cedas
 
 目标机在内网、不联网，**不能下载任何基础环境**。因此构建在有网的机器上完成，产物自带解释器与全部依赖，目标机零安装。
 
+目标机含 **Windows 7**，而 CPython 3.9 起不再支持 Win7，故解释器锁 **Python 3.8.10**，打一份包同时覆盖 Win7 与 Win10。
+
 ```bash
-# 构建机：Windows 64 位 + python.org 官方安装包（必须含 tcl/tk）+ 干净虚拟环境
+# 构建机：Windows 64 位 + python.org 官方 Python 3.8.10（必须含 tcl/tk）+ 干净虚拟环境
 python -m venv .venv-build && .venv-build\Scripts\activate
-pip install -r requirements-build.txt
+pip install -r requirements-build-win7.txt
 
 # 1) 前置检查（20 秒内报出全部环境问题，不打包）
 python tools\build_offline.py --check-only
@@ -66,14 +68,16 @@ python tools\build_offline.py --check-only
 python tools\build_offline.py
 ```
 
-产物 `dist/release/CEDAS-<version>-win64.zip`，解压到目标机后双击 `CEDAS.exe` 即可运行。
+产物 `dist/release/CEDAS-<version>-win7-win64.zip`，解压到目标机后双击 `CEDAS.exe` 即可运行。
 
-三个必须知道的点：
+四个必须知道的点：
 
 - **必须用完整安装的 Python。** 精简版 / embeddable 版不含 tcl/tk，打出的 exe 双击无界面，且打包阶段不报错。构建脚本已把该检查放在最前面。
+- **解释器版本不对会被直接拒绝。** 用 3.11 构建会被闸门拦下，因为那样的包在 Win7 上起不来。仅验证链路时可用 `--allow-unsupported-python`，产物名会标 `-unsupported` 且 SBOM 注明不可交付。
 - **用 onedir 而非 onefile。** 法院终端管控常禁止从 `%TEMP%` 执行二进制，而 onefile 每次启动都解压到 `%TEMP%`，表现为双击无反应。详见 ADR-010。
 - **规则可现场替换，不必重新打包。** 新规则文件放进 `CEDAS\resources\rules\`（与基线同名即覆盖），重启生效。这使内网最麻烦的「改一条规则要重走一遍拷贝审批」不再成立。
 
+Win7 机器还需 KB4490628 与 KB2533623 两个系统补丁；Office 2007 及更早打不开 `.docx`，需装兼容包。
 完整步骤、现场拦截清单与验收单见 [`docs/07-离线部署与交付.md`](docs/07-离线部署与交付.md)。
 
 ## 4. 目录结构

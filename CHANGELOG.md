@@ -8,11 +8,22 @@
 
 ### Added
 - 离线交付能力：`packaging/cedas.spec`（PyInstaller onedir）、`packaging/launcher.py`、`tools/build_offline.py`
-- 构建闸门：前置检查（平台/位数/Python 版本/tcl-tk/依赖/PyInstaller）、打包后冒烟测试、SBOM、SHA256 校验和
+- 构建闸门：前置检查（平台/位数/解释器版本/tcl-tk/依赖/PyInstaller）、打包后冒烟测试、SBOM、SHA256 校验和
+- 构建目标 profile：`win7`（默认，Win7+Win10 通用）与 `win10`；版本不符直接拒绝，
+  `--allow-unsupported-python` 仅用于验证链路且产物标 `-unsupported`
+- `requirements-build-win7.txt` / `requirements-build-win10.txt`：两套固定配方，功能一致
 - `cedas doctor [--json]` 子命令：路径、依赖、可写性自检，供内网现场排障
 - 规则两层加载：`<只读>/resources/rules` 基线 + `<可写>/resources/rules` 现场补丁，同名文件覆盖
-- 文档 `07-离线部署与交付`、`requirements-build.txt`
-- ADR-010（onedir 零安装交付）、ADR-011（只读/可写分离与规则覆盖）、ADR-012（固定构建环境）
+- 文档 `07-离线部署与交付`（含 Win7 补丁、Office 兼容、现场拦截清单）
+- ADR-010（onedir 零安装交付）、ADR-011（只读/可写分离与规则覆盖）、ADR-012（固定构建环境）、
+  ADR-013（解释器降至 3.8 以覆盖 Win7）
+
+### Changed
+- **解释器下界由 3.9 降至 3.8**：目标机含 Windows 7，CPython 3.9 起不再支持 Win7（ADR-013）
+- 依赖随之降档：`pymupdf 1.23.26`、`python-docx 1.1.2`、`MarkupSafe 2.1.5`、`PyInstaller 6.10.0`
+  （均已实测有 cp38 轮子）
+- 内存预算由 4GB 下调为 **2GB**（Win7 机器往往更老）：界面不得一次性加载全部台账或全文高亮
+- CI 增加 Python 3.8 矩阵，并提供构建前置检查 job
 
 ### Fixed
 - **`config.py` 将只读资源与可写数据混为一处**，打包后数据库与生成文书会落入 `sys._MEIPASS` 临时目录，
@@ -24,8 +35,8 @@
 - 剩余首部锚点规则（出生日期、身份证号、住址、强制措施）
 - 主文锚点规则与多被告人切分
 - docxtpl 模板映射与占位符校验器
-- Tkinter 台账与复核界面
-- 目标机（4GB 内存 / 旧 CPU / Win10）实机实测
+- Tkinter 台账与复核界面（按 2GB 内存约束设计，分页加载）
+- 目标机实测：Win10 与 Win7 各一台，记录冷启动、单份耗时、内存峰值
 
 ## [0.1.0] - 2026-10-31
 

@@ -12,7 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11"]
+        # 3.8 是交付下限：目标机含 Win7（ADR-013）。不测 3.8 就等于没验证交付用的解释器。
+        python-version: ["3.8", "3.11"]
 
     steps:
       - uses: actions/checkout@v4
@@ -48,11 +49,11 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-build.txt
+          python -m pip install -r requirements-build-win10.txt
           python -m pip install -e . --no-deps
 
-      - name: Build preflight (平台/位数/tkinter/依赖/PyInstaller)
-        run: python tools/build_offline.py --check-only
+      - name: Build preflight (平台/位数/解释器版本/tkinter/依赖/PyInstaller)
+        run: python tools/build_offline.py --check-only --target win10
 
   guard-sensitive-data:
     runs-on: ubuntu-latest
