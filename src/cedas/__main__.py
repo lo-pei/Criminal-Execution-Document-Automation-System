@@ -53,6 +53,7 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
 def _cmd_extract(args: argparse.Namespace) -> int:
     from .extract import extract
+    from .extract.doc_type import detect_doc_kind
     from .ingest.cleaner import clean
 
     path = Path(args.input)
@@ -65,8 +66,121 @@ def _cmd_extract(args: argparse.Namespace) -> int:
 
     payload = result.to_dict()
     payload["source"] = path.name
+    payload["doc_kind"] = detect_doc_kind(paragraphs).name
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def _cmd_rename(args: argparse.Namespace) -> int:
+    """按正文内容把判决书文件改成规范名。
+
+    默认只**预演**：打印「原名 → 新名」不动文件。改名是破坏性操作，
+    现场又常把判决书放在桌面或下载目录，必须先让人看清楚再动手。
+    """
+    from .pipeline import prepare
+    from .storage.naming import RenameError, apply_rename
+
+    payload: list[dict[str, object]] = []
+    todo = 0
+    done = 0
+    failed = 0
+    skipped = 0
+
+    for raw in args.input:
+        path = Path(raw)
+        item: dict[str, object] = {"source": path.name, "path": str(path)}
+
+        if not path.exists():
+            item.update(status="missing", detail=f"文件不存在：{path}")
+            failed += 1
+            payload.append(item)
+            if not args.json:
+                print(f"[找不到] {path}")
+            continue
+
+        try:
+            document = prepare(path)
+        except Exception as error:  # 读取失败也要逐条报告，不能第一条就中断整批
+            item.update(status="unreadable", detail=str(error))
+            failed += 1
+            payload.append(item)
+            if not args.json:
+                print(f"[读不了] {path.name}\n    {error}")
+            continue
+
+        plan = document.name_plan()
+        item.update(
+            suggested=plan.suggested,
+            missing=list(plan.missing),
+            needs_rename=plan.needs_rename,
+            reason=plan.reason,
+        )
+
+        if plan.target is None:
+            item.update(status="unnamed")
+            failed += 1
+            payload.append(item)
+            if not args.json:
+                print(f"[定不了名] {path.name}\n    {plan.reason}")
+            continue
+
+        if plan.duplicate:
+            item.update(status="duplicate")
+            skipped += 1
+            payload.append(item)
+            if not args.json:
+                print(f"[已存在] {path.name}\n    {plan.reason}")
+            continue
+
+        if not plan.needs_rename:
+            item.update(status="already")
+            payload.append(item)
+            if not args.json:
+                print(f"[已规范] {path.name}")
+            continue
+
+        todo += 1
+        if args.apply:
+            try:
+                target = apply_rename(plan)
+            except RenameError as error:
+                item.update(status="failed", detail=str(error))
+                failed += 1
+                payload.append(item)
+                if not args.json:
+                    print(f"[改名失败] {path.name}\n    {error}")
+                continue
+            item.update(status="renamed", target=str(target))
+            done += 1
+            payload.append(item)
+            if not args.json:
+                print(f"[已改名] {path.name}\n    → {target.name}")
+            continue
+
+        item.update(status="planned")
+        payload.append(item)
+        if not args.json:
+            print(f"[待改名] {path.name}\n    → {plan.suggested}")
+            if plan.missing:
+                print(f"    名字不完整，缺：{'、'.join(plan.missing)}")
+
+    if args.json:
+        print(
+            json.dumps(
+                {"applied": bool(args.apply), "planned": todo, "renamed": done,
+                 "skipped": skipped, "failed": failed, "items": payload},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0 if failed == 0 else 1
+
+    print("-" * 72)
+    if args.apply:
+        print(f"改名 {done} 份，未改成 {todo - done} 份，跳过 {skipped} 份，失败 {failed} 份。")
+    else:
+        print(f"可以改名 {todo} 份，跳过 {skipped} 份，失败 {failed} 份。加 --apply 执行。")
+    return 0 if failed == 0 else 1
 
 
 def _cmd_calc(args: argparse.Namespace) -> int:
@@ -135,6 +249,8 @@ def _cmd_render(args: argparse.Namespace) -> int:
         return 0 if report.ok else 1
 
     print(f"# 源文件  {report.source}")
+    if report.suggested_name and report.suggested_name != report.source.name:
+        print(f"# 规范名  {report.suggested_name}（用 cedas rename 改名）")
     print(f"# 通道={report.channel}  段落={report.paragraph_count}  文书类型={report.doc_type}")
     print(f"# 案号    {report.case_no or '（缺失）'}   法院 {report.court_name or '（缺失）'}")
     print(f"# 映射    {report.mapping}")
@@ -310,9 +426,18 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--json", action="store_true", help="以 JSON 输出")
     render_parser.set_defaults(func=_cmd_render)
 
+    rename_parser = subparsers.add_parser(
+        "rename", help="按正文内容把判决书文件改成规范名（默认只预演）"
+    )
+    rename_parser.add_argument("input", nargs="+", help="一份或多份判决书路径")
+    rename_parser.add_argument(
+        "--apply", action="store_true", help="真正改名。不加时只打印原名与新名"
+    )
+    rename_parser.add_argument("--json", action="store_true", help="以 JSON 输出")
+    rename_parser.set_defaults(func=_cmd_rename)
+
     initdb_parser = subparsers.add_parser("initdb", help="初始化台账数据库")
     initdb_parser.set_defaults(func=_cmd_initdb)
-
     ui_parser = subparsers.add_parser("ui", help="启动图形界面（默认）")
     ui_parser.set_defaults(func=_cmd_ui)
 

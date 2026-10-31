@@ -24,6 +24,7 @@ from typing import Any, Optional, Sequence
 from ..domain.models import Crime, Defendant, ProseParagraph
 from ..pipeline import DocumentItem, PipelineReport, PreparedDocument
 from ..render.formatting import format_cn_date, months_to_chinese
+from ..storage.naming import NamePlan
 
 # 阻断码 → 人话。键是码前缀（``blockers`` 的格式为 ``"E-ID 公民身份号码缺失"``）。
 # 码是稳定的，界面按码查这句话，不解析后面的中文。
@@ -403,6 +404,57 @@ def source_lines(document: PreparedDocument) -> list[tuple[int, str]]:
 
 
 # ---------------------------------------------------------------------------
+# 源文件改名
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RenamePrompt:
+    """改名确认框要显示的三样东西。"""
+
+    title: str
+    body: str
+    can_apply: bool
+
+
+def rename_prompt(plan: NamePlan) -> RenamePrompt:
+    """把命名方案翻成人话。四种情况分开说，不能都弹一句「确定吗」。
+
+    改名动的是用户自己的文件，说清「为什么改、改成什么、缺什么」比按钮本身重要。
+    """
+    if plan.target is None:
+        return RenamePrompt(
+            "还改不了文件名",
+            f"{plan.reason}\n\n补齐这一项之后，文件名会跟着一起变。",
+            False,
+        )
+    if plan.duplicate:
+        return RenamePrompt(
+            "这份文件已经在库里了",
+            f"{plan.reason}\n\n没有改名，也没有删除。请自己确认留哪一份。",
+            False,
+        )
+    if not plan.needs_rename:
+        return RenamePrompt(
+            "文件名已经规范",
+            f"现在的名字就是按案号排的标准名称：\n{plan.source.name}",
+            False,
+        )
+
+    note = ""
+    if plan.missing:
+        note = (
+            f"\n\n名字里还缺{'、'.join(plan.missing)}（没认出来）。"
+            "先把这几项补上再改，名字会更完整。"
+        )
+    return RenamePrompt(
+        "改成规范文件名",
+        f"现在：{plan.source.name}\n改后：{plan.target.name}{note}",
+        True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 人工补录
 # ---------------------------------------------------------------------------
 
@@ -503,6 +555,7 @@ __all__ = [
     "EditError",
     "FieldRow",
     "QueueRow",
+    "RenamePrompt",
     "Summary",
     "apply_edit",
     "blocker_code",
@@ -515,6 +568,7 @@ __all__ = [
     "missing_template",
     "paragraph_text",
     "parse_date",
+    "rename_prompt",
     "source_lines",
     "summarize",
 ]

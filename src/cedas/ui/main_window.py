@@ -38,7 +38,9 @@ from .theme import (
     TEXT,
     TEXT_FAINT,
     TEXT_MUTED,
+    WARN_FG,
     apply_style,
+    family,
     font,
     init_theme,
 )
@@ -82,6 +84,9 @@ class MainWindow:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="选择判决书…", command=self.import_judgment)
         file_menu.add_command(label="重新读取当前判决书", command=self._reload)
+        file_menu.add_command(
+            label="按识别结果重命名判决书…", command=self.rename_source
+        )
         file_menu.add_separator()
         file_menu.add_command(label="打开输出文件夹", command=self._open_output)
         file_menu.add_separator()
@@ -205,6 +210,19 @@ class MainWindow:
         )
         self._status.pack(side="left")
 
+        # 文件名不规范时出现的入口。不常驻：名字已经规范时多一个按钮只是噪音。
+        # 用统一的小字号与琥珀色（与「待补充」同色，不新增第二种强调色）。
+        self._rename_link = tk.Label(
+            inner,
+            text="规范文件名",
+            bg=SURFACE,
+            fg=WARN_FG,
+            # 加下划线：只有颜色的话，它看起来像一句提示而不像能点的东西。
+            font=(family(), SIZE_SMALL, "underline"),
+            cursor="hand2",
+        )
+        self._rename_link.bind("<Button-1>", lambda _event: self.rename_source())
+
         self._open_button = tk.Label(
             inner,
             text="打开输出文件夹",
@@ -215,6 +233,10 @@ class MainWindow:
         )
         self._open_button.pack(side="right")
         self._open_button.bind("<Button-1>", lambda _event: self._open_output())
+
+        # pack(side="right") 先摆的更靠右，所以这个入口落在「打开输出文件夹」左边。
+        self._rename_link.pack(side="right", padx=(0, 14))
+        self._rename_link.pack_forget()
 
     # ------------------------------------------------------------------
     # 状态切换
@@ -232,6 +254,7 @@ class MainWindow:
         )
         self._subtitle.configure(text="")
         self._status.configure(text="就绪")
+        self._rename_link.pack_forget()
 
     def _show_main(self) -> None:
         self._empty.grid_remove()
@@ -276,6 +299,7 @@ class MainWindow:
             self._source.render(review.source_lines(self._document))
 
         self._status.configure(text=self._status_text())
+        self._sync_rename_link()
 
     def _header_text(self) -> str:
         report = self._report
@@ -291,12 +315,22 @@ class MainWindow:
         if document is None:
             return "就绪"
         channel = "PDF 通道" if document.channel == "pdf" else "TXT 通道"
-        parts = [f"已读到 {len(document.paragraphs)} 段", channel]
+        # 文件名打头：现场一个文件夹里躺着七八份「扫描件00x.pdf」，
+        # 不写清楚现在读的是哪一份，复核完才发现看错了文件。
+        parts = [_short_name(document.source.name), f"已读到 {len(document.paragraphs)} 段", channel]
         if self._report is not None and self._report.rendered:
             parts.append(f"已生成 {len(self._report.rendered)} 份")
         if self._report is not None and review.missing_template(self._report):
             parts.append("文书模板未就位")
         return " · ".join(parts)
+
+    def _sync_rename_link(self) -> None:
+        """按当前命名方案决定「文件名待规范」这个入口要不要露出来。"""
+        plan = self._document.name_plan() if self._document is not None else None
+        if plan is not None and plan.needs_rename:
+            self._rename_link.pack(side="right", padx=(0, 14))
+        else:
+            self._rename_link.pack_forget()
 
     # ------------------------------------------------------------------
     # 数据流
@@ -369,6 +403,42 @@ class MainWindow:
             return
         self._load(self._document.source)
 
+    def rename_source(self) -> None:
+        """按识别结果把源文件改成规范名。
+
+        改名动的是用户自己的文件（常放在桌面或下载目录），所以一律**先给人看，
+        再动文件**：确认框里并排列出原名与新名，缺项也一并说清。
+        """
+        from tkinter import messagebox
+
+        from ..storage.naming import RenameError
+
+        if self._document is None:
+            self.import_judgment()
+            return
+
+        prompt = review.rename_prompt(self._document.name_plan())
+        if not prompt.can_apply:
+            messagebox.showinfo(prompt.title, prompt.body, parent=self.root)
+            return
+        if not messagebox.askyesno(
+            prompt.title, f"{prompt.body}\n\n确定改名吗？", parent=self.root
+        ):
+            return
+
+        try:
+            path = self._document.rename_source()
+        except RenameError as error:
+            self._alert("改名没成功", str(error))
+            return
+
+        self._replan()
+        self._alert(
+            "已改名",
+            f"这份判决书现在的名字是：\n{path.name}\n\n"
+            "以后按案号排序就能直接找到它；同名文件不会被覆盖。",
+        )
+
     # ------------------------------------------------------------------
     # 事件
     # ------------------------------------------------------------------
@@ -417,8 +487,9 @@ class MainWindow:
             where = first.parent if first is not None else OUTPUT_DIR
             self._alert(
                 "已生成",
-                f"共 {len(report.rendered)} 份，已存到：\n{where}\n\n"
-                "重新生成不会覆盖上一份，文件名会带 v2、v3。",
+                f"共 {len(report.rendered)} 份，已按「案号_被告人_文书类型_日期」命名，"
+                f"存到：\n{where}\n\n"
+                "重新生成不会覆盖上一份，文件名末尾会带 v2、v3。",
             )
         elif report.blocked:
             self._alert("没有生成", "还有必填项没补齐，补齐后再点一次。")
@@ -471,6 +542,11 @@ class MainWindow:
     def run(self) -> int:
         self.root.mainloop()
         return 0
+
+
+def _short_name(name: str, limit: int = 30) -> str:
+    """状态栏里的文件名。超长截尾——「微信图片_20230510103045.pdf」这种尾巴没有信息量。"""
+    return name if len(name) <= limit else f"{name[: limit - 1]}…"
 
 
 def launch() -> int:

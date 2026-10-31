@@ -32,12 +32,14 @@ from .config import DB_PATH, OUTPUT_DIR, REQUIRED_FIELDS, ensure_data_dirs
 from .domain.enums import PrincipalType
 from .domain.models import Case, Defendant, ProseParagraph, SentenceSpan
 from .extract import extract
+from .extract.doc_type import DocKind, detect_doc_kind
 from .ingest import read_document
 from .ingest.cleaner import clean
 from .render import build_context, find_mapping, find_template, load, render
 from .render.template import TemplateNotFoundError
 from .storage.archive import archive_path, next_version
 from .storage.db import Database
+from .storage.naming import NamePlan, apply_rename, party_label, plan_rename
 
 DEFAULT_DOC_TYPE = "执行通知书"
 
@@ -110,6 +112,9 @@ class PipelineReport:
     items: list[DocumentItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
+    # 源文件的规范名（不含目录）。与源文件同名时说明已经规范；
+    # 为空说明连案号都没认出来，此时不改名——案号是检索主键。
+    suggested_name: str = ""
 
     @property
     def rendered(self) -> list[DocumentItem]:
@@ -138,6 +143,7 @@ class PipelineReport:
             "paragraph_count": self.paragraph_count,
             "mapping": str(self.mapping) if self.mapping else None,
             "template": str(self.template) if self.template else None,
+            "suggested_name": self.suggested_name,
             "dry_run": self.dry_run,
             "ok": self.ok,
             "rendered_count": len(self.rendered),
@@ -279,9 +285,30 @@ class PreparedDocument:
     case: Case
     defendants: list[Defendant]
     warnings: list[str] = field(default_factory=list)
+    doc_kind: DocKind = field(default_factory=DocKind)
 
     def defendant(self, seq: int) -> Optional[Defendant]:
         return next((d for d in self.defendants if d.seq == seq), None)
+
+    def name_plan(self) -> NamePlan:
+        """按**当前**抽取结果给出源文件的规范名。
+
+        每次现算，不缓存：界面里补录案号、改判决日期都要让文件名跟着变，
+        缓存住就会出现「字段改对了、名字还是旧的」。
+        """
+        return plan_rename(
+            self.source,
+            case_no=str(self.case.case_no.value or ""),
+            party=party_label([d.display_name for d in self.defendants if d.name.is_present]),
+            doc_type=self.doc_kind.name,
+            when=_as_date(self.case.judgment_date),
+        )
+
+    def rename_source(self) -> Path:
+        """把源文件改成规范名并回写 ``source``。失败抛 ``naming.RenameError``。"""
+        path = apply_rename(self.name_plan())
+        self.source = path
+        return path
 
 
 def prepare(source: Path | str) -> PreparedDocument:
@@ -297,6 +324,7 @@ def prepare(source: Path | str) -> PreparedDocument:
         case=result.case,
         defendants=list(result.defendants),
         warnings=[str(w) for w in result.warnings],
+        doc_kind=detect_doc_kind(paragraphs),
     )
 
 
@@ -349,6 +377,7 @@ def plan(
         template=template,
         warnings=warnings,
         dry_run=dry_run,
+        suggested_name=document.name_plan().suggested,
     )
 
     if not selected:

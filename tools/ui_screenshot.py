@@ -9,6 +9,7 @@
     py -3.12 tools/ui_screenshot.py loaded    # 导入合成判决书后的主界面
     py -3.12 tools/ui_screenshot.py blocked   # 人为抹掉身份证号，看「待补充」
     py -3.12 tools/ui_screenshot.py locate    # 点字段后原文展开与高亮
+    py -3.12 tools/ui_screenshot.py rename    # 文件名不规范时状态栏的「文件名待规范」
 
 输出到 ``build/ui-<stage>.png``。需要 Pillow；``build/`` 已被 gitignore。
 截图前把进程设为 DPI 感知并把 tk scaling 固定为 96dpi，否则 125% 缩放的机器上
@@ -63,6 +64,23 @@ def enable_dpi_awareness() -> None:
         ctypes.windll.user32.SetProcessDPIAware()
 
 
+def _input(stage: str) -> Path:
+    """这一阶段要载入哪份文件。
+
+    ``rename`` 阶段用一份**内容相同、名字不规范**的副本：真实场景里判决书就是
+    「微信图片_20230510103045.pdf」这种名字，用它才看得出状态栏的入口对不对。
+    """
+    source = Path("examples/S000__京0105刑初123号.txt")
+    if stage != "rename":
+        return source
+    import shutil
+
+    messy = Path("build/ui-input") / "微信图片_20230510103045.txt"
+    messy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, messy)
+    return messy
+
+
 def main() -> None:
     enable_dpi_awareness()
     stage = sys.argv[1] if len(sys.argv) > 1 else "empty"
@@ -76,7 +94,7 @@ def main() -> None:
     window.root.lift()
 
     if stage != "empty":
-        window._load(Path("examples/S000__京0105刑初123号.txt"))
+        window._load(_input(stage))
     if stage == "locate":
         rows = review.build_fields(
             window._document,

@@ -34,7 +34,8 @@ def test_build_filename():
 
 def test_build_filename_with_version():
     name = build_filename("（2023）京0105刑初123号", "张三", "执行通知书", date(2023, 5, 1), version=2)
-    assert "_v2_" in name
+    # 版本号在末尾：夹在类型与日期中间会让同案不同版本排不到一起（见 naming 模块）。
+    assert name == "（2023）京0105刑初123号_张三_执行通知书_20230501_v2.docx"
 
 
 def test_database_roundtrip(tmp_path):

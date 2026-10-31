@@ -1,53 +1,30 @@
-"""归档命名。
+"""归档路径。
 
-命名规则：``{案号}_{被告人}_{文书类型}_{日期}.docx``，落盘路径
-``{根目录}/{案号}/{被告人}/``（见 01 §3.8）。
+命名规则本身在 :mod:`cedas.storage.naming`——源文件与输出文书共用同一套，
+不在这里另立一份。本模块只负责**路径**：目录层级、长度校验、版本探测。
+
+落盘路径：``{根目录}/{案号}/{被告人}/{案号}_{被告人}_{文书类型}_{日期}_{vN}.docx``
+（见 01 §3.8）。
 
 三点必须处理，否则现场会出错：
-1. Windows 非法字符 ``\\ / : * ? " < > |``
+1. Windows 非法字符 ``\\ / : * ? " < > |``（交给 ``naming.clean``）
 2. 同案多人同文书类型的版本冲突
 3. 260 字符路径上限
 """
 
 from __future__ import annotations
 
-import re
 from datetime import date
 from pathlib import Path
 
-_ILLEGAL_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
-_SPACE_RE = re.compile(r"\s+")
-
-# Windows 保留名（不区分大小写、带扩展名也保留）
-_RESERVED = {
-    "CON", "PRN", "AUX", "NUL",
-    *{f"COM{i}" for i in range(1, 10)},
-    *{f"LPT{i}" for i in range(1, 10)},
-}
-
-MAX_SEGMENT_LEN = 60
-MAX_PATH_LEN = 250
-
-
-class PathTooLongError(ValueError):
-    """路径超过 Windows 限制。应缩短目录层级或案号，不得静默截断。"""
-
-
-def sanitize(segment: str, *, max_len: int = MAX_SEGMENT_LEN) -> str:
-    """清理单个路径片段。
-
-    >>> sanitize('京0105刑初123号')
-    '京0105刑初123号'
-    >>> sanitize('盗窃/抢夺')
-    '盗窃-抢夺'
-    """
-    text = _ILLEGAL_RE.sub("-", segment or "")
-    text = _SPACE_RE.sub("", text).strip(" .-")
-    if len(text) > max_len:
-        text = text[:max_len].rstrip(" .-")
-    if text.upper() in _RESERVED:
-        text = f"_{text}"
-    return text or "未命名"
+from .naming import (
+    CASE_NO_MAX,
+    MAX_PATH_LEN,
+    MAX_SEGMENT_LEN,
+    PathTooLongError,
+    canonical_filename,
+    sanitize,
+)
 
 
 def build_filename(
@@ -64,19 +41,13 @@ def build_filename(
     >>> build_filename('（2023）京0105刑初123号', '张三', '执行通知书', date(2023, 5, 1))
     '（2023）京0105刑初123号_张三_执行通知书_20230501.docx'
     """
-    parts = [
-        sanitize(case_no),
-        sanitize(defendant_name),
-        sanitize(doc_type),
-        when.strftime("%Y%m%d"),
-    ]
-    if version > 1:
-        parts.insert(3, f"v{version}")
-    return "_".join(parts) + suffix
+    return canonical_filename(
+        case_no, defendant_name, doc_type, when, version=version, suffix=suffix
+    )
 
 
 def archive_dir(root: Path | str, case_no: str, defendant_name: str) -> Path:
-    return Path(root) / sanitize(case_no, max_len=40) / sanitize(defendant_name)
+    return Path(root) / sanitize(case_no, max_len=CASE_NO_MAX) / sanitize(defendant_name)
 
 
 def archive_path(
@@ -112,6 +83,7 @@ def next_version(root: Path | str, case_no: str, defendant_name: str, doc_type: 
 
 __all__ = [
     "MAX_PATH_LEN",
+    "MAX_SEGMENT_LEN",
     "PathTooLongError",
     "archive_dir",
     "archive_path",

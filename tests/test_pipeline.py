@@ -137,7 +137,7 @@ def test_second_run_keeps_first_version(template, tmp_path):
 
     assert first.items[0].version == 1
     assert second.items[0].version == 2
-    assert "_v2_" in second.items[0].path.name
+    assert "_v2." in second.items[0].path.name
     assert first.items[0].path.exists(), "重跑不得覆盖已签发的文书"
 
 
