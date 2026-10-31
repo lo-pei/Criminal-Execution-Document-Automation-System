@@ -134,7 +134,7 @@ ui  ──▶  storage / render / extract  ──▶  ingest / calc  ──▶  
 # 依赖（开发期）
 python -m pip install -e ".[dev]"
 
-# 跑单元测试（当前 111 项）
+# 跑单元测试（当前 123 项）
 python -m pytest -q
 
 # 命令行自检：解析刑期
@@ -209,7 +209,7 @@ python tools\build_offline.py
 - 文件命名：`{样本编号}__{案号}.txt`，如 `S001__京0105刑初123号.txt`。样本编号与真值表一一对应。
 - 无页码信息 ⇒ 溯源字段 `page` 为 `None`，复核界面显示「段落 N」。PDF 通道接入后自动填充页码。
 
-`examples/` 下有一份**合成样本**（非真实案件），用于跑通命令与单元测试；真实样本放 `data/samples/`，不随仓库分发。
+`examples/` 下有一份**合成样本**（非真实案件），用于跑通命令与单元测试；真实样本放 `data/samples/`，不随仓库分发。合成样本同时提供 `.txt` 与 `.pdf` 两份：PDF 由 `tools/make_sample_pdf.py` 从同一份 TXT 排版生成（A4、页眉、页码、大字号标题、按行宽折行），用来断言"同一份文书走两条通道，清洗结果逐段相同"。
 
 > 采样本阶段务必跑 `python tools/sample_lint.py data/samples`：它会重点识别"被手工整理过"的样本。整理过的样本会让清洗规则假通过，这个坑必须在这一步堵住。
 
@@ -230,7 +230,7 @@ python tools\build_offline.py
 │   ├── storage/               # 存储层：SQLite 台账、文件归档
 │   └── ui/                    # 表现层：Tkinter 主窗口与复核面板
 ├── packaging/                 # 打包配置（PyInstaller spec 与入口薄壳）
-├── tests/                     # 单元测试与回归夹具（111 项）
+├── tests/                     # 单元测试与回归夹具（123 项）
 ├── resources/rules/           # 规则库（外部 JSON，可热替换，不随程序版本锁定）
 ├── resources/templates/       # 文书模板说明（模板原件不入库）
 ├── tools/                     # 开发工具脚本（建表、样本体检、离线打包）
@@ -245,7 +245,7 @@ python tools\build_offline.py
 ## 8. 质量保障
 
 ```bash
-python -m pytest -q                      # 111 项单元测试
+python -m pytest -q                      # 123 项单元测试
 python -m ruff check src tests tools packaging   # 静态检查，零告警
 python tools/sample_lint.py data/samples # 样本体检（识别被手工整理过的样本）
 python tools/build_offline.py --check-only       # 构建环境闸门
@@ -253,9 +253,10 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 保障项 | 机制 |
 | :--- | :--- |
-| 单元测试 | **111 项**，覆盖清洗、刑期解析、抽取、渲染、存储 |
+| 单元测试 | **123 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、抽取、渲染、存储 |
 | 静态检查 | `ruff`，`select = E/F/W/I/N/UP/B/SIM/RUF`，零告警 |
 | 离线守门 | `tests/test_offline_guard.py` **静态断言**运行端无网络导入——把"不联网"变成可执行断言，而非文档承诺 |
+| 双通道一致性 | 同一份合成样本同时以 `.txt` 与 `.pdf` 入库，断言两条通道的段落文本、段落类型逐条相同——把 ADR-005 从文档承诺变成测试 |
 | 3.8 兼容守门 | `ast.parse(feature_version=(3,8))` + 运行时 API 黑名单。CI 矩阵跑 3.9/3.11，本地守门覆盖 3.8 差异 |
 | 敏感数据守门 | CI 拒绝 `data/`、`*.docx`、`*.xlsx`、`*.zip` 进入版本库 |
 | 打包冒烟测试 | 产物内跑 `cedas-cli doctor --json`，校验 `ok` / `rule_count` / `frozen` |
@@ -264,9 +265,9 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 指标 | 数值 |
 | :--- | ---: |
-| 源码行数 | 2,980（`src/cedas/`，28 个模块） |
-| 测试行数 | 936 |
-| 工具脚本行数 | 1,183 |
+| 源码行数 | 3,056（`src/cedas/`，28 个模块） |
+| 测试行数 | 1,097 |
+| 工具脚本行数 | 1,413 |
 | 规则文件 | 2（`head_case_no.v1` / `head_court_name.v1`） |
 | 文档 | 8 篇规格 + 过程记录 |
 
