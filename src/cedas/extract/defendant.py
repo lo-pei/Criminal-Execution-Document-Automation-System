@@ -13,7 +13,8 @@
 v1 覆盖范围与已知缺口：
 
 - 首部：姓名、性别、出生日期、公民身份号码、民族、文化程度、住址、羁押场所、强制措施段。
-- 主文：罪名（多罪名以「、」分隔）、主刑种类与月数、罚金数额、缓刑。
+- 主文：罪名（多罪名以「、」分隔）、主刑种类与月数、罚金数额、缓刑、
+  判决书载明的刑期起止日（仅作校验，见 ADR-017）。
 - **未覆盖**：单位犯罪、法定代表人、辩护人、前科与累犯认定、"总和刑期"表述下的
   数罪并罚并罚规则（字段字典 §2.2 已标【待确认】）、户籍地与经常居住地不一致。
 """
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date
 from typing import Optional
 
@@ -36,7 +38,7 @@ from ..domain.models import (
     FieldValue,
     ProseParagraph,
 )
-from .anchors import Anchors
+from .anchors import Anchors, text_before_end_marker
 from .combination import detect_combination
 
 # --- 首部：身份信息 --------------------------------------------------------
@@ -104,6 +106,29 @@ _CUSTODY_TYPES = {
     "监视居住": CustodyType.RESIDENTIAL,
     "指定居所监视居住": CustodyType.DESIGNATED_RESIDENTIAL,
 }
+
+# --- C 组：判决书载明的刑期起止日 ------------------------------------------
+# 真实文书写「即自2024年9月19日起至2025年3月18日止」，也写「即从2013年9月28日
+# 起至2024年9月27日止」；「即」可省，「自」「从」两用，日期与「起」之间不空格。
+_SPAN_RE = re.compile(
+    r"(?:即)?(?:自|从)(\d{4})年(\d{1,2})月(\d{1,2})日起\s*至(\d{4})年(\d{1,2})月(\d{1,2})日止"
+)
+# 同一份判决书里「自…起至…止」至少还有两种别的意思，都长得一模一样：
+#
+#   另查明：被告人曾因犯抢劫罪……刑期自2008年6月30日起至2014年6月29日止。（前罪）
+#   宿某建假释考验期自2013年2月4日起至2014年6月29日止。（假释考验期）
+#
+# 按日期形状取，前罪的刑期就会覆盖本案的刑期，而且是静默覆盖。判据用主文刑期注释
+# 段的固定用语——前罪句与考验期句都不会写「判决执行之日起计算」或「折抵」。
+_SPAN_MARKERS = (
+    "判决执行之日起计算",
+    "判决执行以前先行羁押",
+    "判决执行前先行羁押",
+    "折抵",
+)
+_EXAMINATION_PERIOD = "考验期"
+# 主文里的刑期注释段以「（刑期」「（主刑期」起头，段内没有姓名。
+_SPAN_NOTE_HEADS = ("（刑期", "(刑期", "（主刑期", "(主刑期")
 
 
 def _fv(
@@ -337,7 +362,13 @@ def index_body(
     current: Optional[int] = None
 
     for paragraph in body:
-        text = paragraph.text.strip()
+        text = text_before_end_marker(paragraph.text).strip()
+        if not text:
+            continue
+        # 落款标记与最后一项判决可能同段，切掉后半再判归属，免得那句
+        # 「如不服本判决……被告人可……」把段落算到某个被告名下。
+        if text != paragraph.text:
+            paragraph = replace(paragraph, text=text)
         # 用已知姓名直接比对，不用「被告人+2~4 个汉字」的正则：
         # 「…对被告人郑十一宣告缓刑…」里的姓名后面跟的是动词而不是标点，
         # 正则的右界条件会把这一段整个漏掉，连带丢掉它后面那句「决定执行」。
@@ -369,7 +400,13 @@ def _is_continuation(text: str) -> bool:
     """
     if "并罚" in text or "决定执行" in text:
         return True
-    return _SECTION_PREFIX_RE.sub("", text).startswith(_CONTINUATION_HEADS)
+    stripped = _SECTION_PREFIX_RE.sub("", text)
+    # 刑期注释段：「（刑期从判决执行之日起计算……即自X日起至Y日止）」。它自成一段、
+    # 段内没有姓名，真实判决里三名被告人的注释段连着排（（2024）冀0481刑初101号），
+    # 不并进上一个被告人，C 组的载明起止日一个都抽不到。
+    if stripped.startswith(_SPAN_NOTE_HEADS):
+        return True
+    return stripped.startswith(_CONTINUATION_HEADS)
 
 
 def _attach_fine(crime: Crime, tail: str, paragraph: ProseParagraph) -> None:
@@ -517,6 +554,34 @@ def _apply_body(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
     defendant.merged_days = parsed.days
 
 
+def _apply_text_span(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
+    """抽判决书载明的刑期起止日（C 组 ``text_start`` / ``text_end``）。
+
+    只抽**主文刑期注释段**里的那一处。取到就停——一名被告人的主文里只应有一处
+    载明起止日，第二处要么是前罪、要么是考验期，都不该覆盖本案的。
+
+    抽到的值**只用于校验**（ADR-017）。载明值等于「起算日 + 刑期 − 羁押折抵」，
+    折抵天数首部读不出来（指定居所监视居住、看守所外羁押都算），拿推算值去换它
+    等于用一条规则盖住另一条规则；但反过来，推算值也可能是对的、载明值才是笔误，
+    所以两边都摆出来，交人裁定。
+    """
+    for paragraph in block:
+        text = _verdict_text(paragraph.text)
+        if not any(marker in text for marker in _SPAN_MARKERS):
+            continue
+        for match in _SPAN_RE.finditer(text):
+            # 「假释考验期自X起至Y止」与刑期注释段可能同段出现，按上下文排除。
+            if _EXAMINATION_PERIOD in text[max(0, match.start() - 8) : match.start()]:
+                continue
+            start = _to_date(match.group(1), match.group(2), match.group(3))
+            end = _to_date(match.group(4), match.group(5), match.group(6))
+            if start is None or end is None or end < start:
+                continue
+            defendant.text_start = _fv(start, paragraph, "body_span@v1")
+            defendant.text_end = _fv(end, paragraph, "body_span@v1")
+            return
+
+
 def _reasoning_sentences(block: Sequence[ProseParagraph], name: str) -> str:
     """从说理段里挑出**提到该被告人**的句子。
 
@@ -556,6 +621,7 @@ def extract_defendants(
     for defendant in defendants:
         block = body.get(defendant.seq, [])
         _apply_body(defendant, block)
+        _apply_text_span(defendant, block)
         defendant.combination = detect_combination(
             "".join(_verdict_text(paragraph.text) for paragraph in block),
             len(defendant.crimes),

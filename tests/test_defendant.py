@@ -163,3 +163,118 @@ def test_to_dict_serializes_defendants_with_iso_dates():
     assert defendant["birth_date"]["value"] == "1985-03-02"
     assert defendant["span"]["end"] == "2026-08-31"
     assert defendant["crimes"][0]["additional"][0]["fine_amount"] == 5000
+
+
+# --- C 组：判决书载明的刑期起止日 ----------------------------------------------
+
+DECLARED_TAIL = "（刑期从判决执行之日起计算；判决执行以前先行羁押的，羁押一日折抵刑期一日，即自{start}起至{end}止。罚金已缴纳）"
+
+
+def test_declared_span_is_extracted_from_verdict_note():
+    """「即自X日起至Y日止」要抽出来，并指回原文段落。"""
+    text = f"""北京市朝阳区人民法院
+刑事判决书
+{HEAD}
+因涉嫌犯盗窃罪，于2023年3月1日被刑事拘留，同年3月14日被逮捕。
+本院认为，被告人张三以非法占有为目的，窃取他人财物。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑六个月，并处罚金人民币五千元。
+{DECLARED_TAIL.format(start="2023年3月1日", end="2023年8月31日")}
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    defendant = _extract(text).defendants[0]
+
+    assert defendant.declared_span == (date(2023, 3, 1), date(2023, 8, 31))
+    assert defendant.text_start.provenance is not None
+    check = defendant.text_start.provenance
+    assert "即自2023年3月1日起" in check.snippet
+
+
+def test_declared_span_ignores_prior_sentence_and_examination_periods():
+    """同一份判决书里「自…起至…止」还有三种别的意思，都不能当本案刑期。
+
+    - 首部「另查明」写前罪的刑期起止（这一段往往还有前罪的起算日）；
+    - 「假释考验期自X起至Y止」「缓刑考验期自X起至Y止」；
+    - 本案主文的「即自X起至Y止」。
+
+    按日期形状取，前罪那一处会静默覆盖本案的，而文书上看不出任何异常。
+    """
+    text = f"""北京市朝阳区人民法院
+刑事判决书
+{HEAD}
+因涉嫌犯盗窃罪，于2023年3月1日被刑事拘留。
+另查明，被告人张三曾因犯盗窃罪，于2015年6月1日被判处有期徒刑一年，刑期自2014年12月1日起至2015年11月30日止，缓刑考验期自2015年6月12日起至2017年6月11日止。
+本院认为，被告人张三构成盗窃罪。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑六个月，并处罚金人民币五千元。
+{DECLARED_TAIL.format(start="2023年3月1日", end="2023年8月31日")}
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    defendant = _extract(text).defendants[0]
+
+    assert defendant.declared_span == (date(2023, 3, 1), date(2023, 8, 31))
+
+
+def test_declared_span_of_last_defendant_survives_merged_appeal_clause():
+    """最后一名被告人的注释段与「如不服本判决」拼成一段时，仍要抽到。
+
+    清洗层按「上一行有没有句末标点」决定拼不拼接，注释段以「）」结尾不算句末
+    标点，于是这一段后半是上诉告知、前半是刑期注释。按段落归属只能二选一：
+    整段划给落款，第二个人的起止日就永远抽不到，且不会有任何报错。
+    """
+    text = f"""北京市朝阳区人民法院
+刑事判决书
+{HEAD}
+因涉嫌犯盗窃罪，于2023年3月1日被刑事拘留。
+被告人李四，女，1990年7月8日出生，汉族，住北京市海淀区某街2号。
+因涉嫌犯诈骗罪，于2023年2月1日被刑事拘留。
+本院认为，二人的行为均已构成犯罪。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑六个月。
+（刑期从判决执行之日起计算；判决执行以前先行羁押的，羁押一日折抵刑期一日，即自2023年3月1日起至2023年8月31日止）
+二、被告人李四犯诈骗罪，判处有期徒刑二年。
+（刑期从判决执行之日起计算；判决执行以前先行羁押的，羁押一日折抵刑期一日，即自2023年2月1日起至2025年1月31日止）
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    defendants = _extract(text).defendants
+
+    assert defendants[0].declared_span == (date(2023, 3, 1), date(2023, 8, 31))
+    assert defendants[1].declared_span == (date(2023, 2, 1), date(2025, 1, 31))
+
+
+def test_examination_period_alone_is_not_a_declared_span():
+    """只有考验期的判决书，不得把考验期当成刑期起止。"""
+    text = f"""北京市朝阳区人民法院
+刑事判决书
+{HEAD}
+本院认为，被告人张三构成盗窃罪。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑二年，缓刑二年（缓刑考验期自2023年3月1日起至2025年2月28日止）。
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    defendant = _extract(text).defendants[0]
+
+    assert defendant.declared_span == (None, None)
+    assert defendant.probation.months.value == 24
+
+
+def test_mismatch_between_declared_and_computed_is_reported_at_extract():
+    """抽取阶段就要报不一致，别等到渲染前最后一步。
+
+    `cedas extract --json` 是采集样本、排查缺陷时唯一的观察窗口；
+    校验只放在 render 里，等于把问题藏到最后一公里。
+    """
+    text = f"""北京市朝阳区人民法院
+刑事判决书
+{HEAD}
+因涉嫌犯盗窃罪，于2023年3月1日被刑事拘留，同年3月14日被逮捕。
+本院认为，被告人张三构成盗窃罪。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑六个月，并处罚金人民币五千元。
+{DECLARED_TAIL.format(start="2023年3月1日", end="2023年8月26日")}
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    result = _extract(text)
+
+    assert result.defendants[0].span.consistency.value == "不一致"
+    assert any(w.code == "V1" and "晚 5 天" in w.message for w in result.warnings)

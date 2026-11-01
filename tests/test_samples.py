@@ -63,6 +63,9 @@ class Person:
     months: int | None
     combination: CombinationKind = CombinationKind.NONE
     probation_months: int | None = None
+    # 判决书正文载明的刑期起止日（「即自X日起至Y日止」）。未载明为 None——
+    # 实测 53% 的主文不写起止日（见 docs/08），None 和日期一样是断言。
+    declared: tuple[date, date] | None = None
 
 
 @dataclass(frozen=True)
@@ -78,40 +81,55 @@ SAMPLES: tuple[Sample, ...] = (
     Sample(
         # 一案二人：一人两罪（有期徒刑 + 拘役）数罪并罚，一人一罪。
         # 末段载明起止日，可用于核对「拘役二个月 + 有期徒刑六个月」并罚取有期徒刑。
+        # 第二人的注释段与「如不服本判决」挤在同一自然段（上一行以「）」结尾，
+        # 清洗层不认为句子结束），锚点不切开这一段，第二个人的起止日就抽不到。
         file="S001__冀0131刑初371号.txt",
         kind=CRIMINAL_JUDGMENT,
         people=(
-            Person("史某伟", ("盗窃", "危险驾驶"), 6, CombinationKind.MERGE),
-            Person("史某国", ("盗窃",), 6),
+            Person("史某伟", ("盗窃", "危险驾驶"), 6, CombinationKind.MERGE,
+                   declared=(date(2024, 9, 19), date(2025, 3, 18))),
+            Person("史某国", ("盗窃",), 6,
+                   declared=(date(2024, 9, 19), date(2025, 3, 18))),
         ),
     ),
     Sample(
         # 先并后减（刑法 70 条，漏罪）。判据词「已经执行的刑期」只出现在
         # 「本院认为」段，主文只写「与前罪刑罚……并罚」——形态判定必须能
         # 从说理段兜底，否则会退化成第 69 条。
+        # 载明的 2020-05-11 是**前罪**的刑期起算日；首部「另查明」里还有一处
+        # 「刑期自2020年5月11日起至2021年11月10日止」，那是前罪自己的刑期，
+        # 按日期形状取就会覆盖本案这一处。
         file="S002__苏0723刑初53号.txt",
         kind=CRIMINAL_JUDGMENT,
-        people=(Person("张某", ("盗窃",), 30, CombinationKind.MERGE_THEN_DEDUCT),),
+        people=(Person("张某", ("盗窃",), 30, CombinationKind.MERGE_THEN_DEDUCT,
+                       declared=(date(2020, 5, 11), date(2022, 11, 10))),),
         blocked=("E-START-COMBINED",),
     ),
     Sample(
         # 先减后并（刑法 71 条，又犯新罪）。主文写「连同前罪没有执行的有期徒刑
         # 二年八个月」——是「没有执行的有期徒刑」，不是「没有执行的刑罚」，
         # 差两个字，按固定短语匹配会落到第 69 条去。
+        # 载明区间比「起算日 + 刑期 − 1 日」短 22 天，正对应原文那句
+        # 「共折抵二十二日」——这是系统算不出来、只能靠人核的部分。
         file="S003__甬余刑初字第633号.txt",
         kind=CRIMINAL_JUDGMENT,
-        people=(Person("颜某", ("盗窃",), 34, CombinationKind.DEDUCT_THEN_MERGE),),
+        people=(Person("颜某", ("盗窃",), 34, CombinationKind.DEDUCT_THEN_MERGE,
+                       declared=(date(2014, 4, 17), date(2017, 1, 25))),),
         blocked=("E-START-COMBINED",),
     ),
     Sample(
         # 同案两名被告人分别对应刑法 86 条（撤销假释）与 77 条（撤销缓刑）。
         # 说理段把两人的情形写在同一句里，段落归属只能给一个人——形态判定
         # 若吃说理段，必有一人拿到不属于他的「撤销缓刑」。
+        # 首部「另查明」还写着前罪刑期（2008-06-30～2014-06-29）、假释考验期、
+        # 缓刑考验期三处「自…起至…止」，都不是本案的刑期起止。
         file="S004__梁刑初字第12号.txt",
         kind=CRIMINAL_JUDGMENT,
         people=(
-            Person("宿某建", ("抢劫",), 132, CombinationKind.DEDUCT_THEN_MERGE),
-            Person("张某祥", ("抢劫",), 132, CombinationKind.REVOKE_PROBATION),
+            Person("宿某建", ("抢劫",), 132, CombinationKind.DEDUCT_THEN_MERGE,
+                   declared=(date(2013, 9, 28), date(2024, 9, 27))),
+            Person("张某祥", ("抢劫",), 132, CombinationKind.REVOKE_PROBATION,
+                   declared=(date(2013, 10, 16), date(2024, 5, 1))),
         ),
         blocked=("E-START-COMBINED",),
     ),
@@ -139,12 +157,17 @@ SAMPLES: tuple[Sample, ...] = (
     ),
     Sample(
         # 拘役，一案三人。主文不载明起止日，起算日取逮捕日，各自折抵天数不同。
+        # 三人的注释段连着排、段内都没有姓名，全靠「归属到上一个被告人」接上；
+        # 载明区间分别少 5 / 3 / 1 天，正是原文写的「折抵5日 / 3日 / 1日」。
         file="S008__2024冀0481刑初101号.txt",
         kind=CRIMINAL_JUDGMENT,
         people=(
-            Person("陈某", ("帮助信息网络犯罪活动",), 3),
-            Person("刘某", ("帮助信息网络犯罪活动",), 2),
-            Person("胡某凯", ("帮助信息网络犯罪活动",), 2),
+            Person("陈某", ("帮助信息网络犯罪活动",), 3,
+                   declared=(date(2024, 1, 16), date(2024, 4, 10))),
+            Person("刘某", ("帮助信息网络犯罪活动",), 2,
+                   declared=(date(2024, 1, 16), date(2024, 3, 12))),
+            Person("胡某凯", ("帮助信息网络犯罪活动",), 2,
+                   declared=(date(2024, 1, 16), date(2024, 3, 14))),
         ),
     ),
     Sample(
@@ -219,6 +242,9 @@ def test_defendants(sample: Sample):
         months = defendant.merged_months.value
         assert months == expected.months, f"{expected.name} 的决定执行刑期不对"
         assert defendant.probation.months.value == expected.probation_months
+        assert defendant.declared_span == (
+            expected.declared if expected.declared else (None, None)
+        ), f"{expected.name} 的载明起止日不对"
 
 
 @pytest.mark.parametrize("sample", SAMPLES, ids=lambda s: s.file[:4])
@@ -283,6 +309,77 @@ def test_combined_start_by_hand(file: str, name: str, start: date, end: date):
     assert item.start == start
     assert item.end == end
     assert any("W-START-MANUAL" in warning for warning in item.warnings)
+
+
+def test_declared_span_is_never_used_as_value():
+    """载明起止日只作校验，不进 span（ADR-017）。
+
+    起算日没给就是没给：不能因为原文写了「即自2014年4月17日起」就把起算日填上，
+    也不能因为载明的止日更短就把届满日改短。两件事都做过一次，就再也分不清
+    「文书上的日期」是抄的还是算的。
+    """
+    path = SAMPLES_DIR / "S003__甬余刑初字第633号.txt"
+    if not path.exists():
+        pytest.skip("缺少真实样本 S003")
+
+    report = plan(prepare(path), require_template=False, dry_run=True)
+    item = report.items[0]
+
+    assert item.start is None and item.end is None
+    assert (item.text_start, item.text_end) == (date(2014, 4, 17), date(2017, 1, 25))
+    # 载明的日子要出现在阻断提示里供人誊抄——拦住了却不给日期，等于让人回原文翻。
+    blocker = next(b for b in item.blockers if b.startswith("E-START-COMBINED"))
+    assert "2014-04-17" in blocker and "2017-01-25" in blocker
+
+
+def test_declared_offset_is_reported_in_days():
+    """载明区间与刑期差几天要报出来，差值就是折抵天数。
+
+    S003 原文写「共折抵二十二日」，系统算出 22 天——对得上，说明校验本身没错；
+    S008 三人的「折抵5日 / 3日 / 1日」同理。这几个数看得见，承办人才知道
+    「只是折抵，不是抽错了」。
+    """
+    path = SAMPLES_DIR / "S003__甬余刑初字第633号.txt"
+    if not path.exists():
+        pytest.skip("缺少真实样本 S003")
+
+    item = plan(prepare(path), require_template=False, dry_run=True).items[0]
+    assert any(w.startswith("V2") and "短 22 天" in w for w in item.warnings)
+
+
+def test_declared_end_mismatch_is_reported():
+    """起算日算得出、止日对不上时，必须报 V1 并写明差几天。"""
+    path = SAMPLES_DIR / "S008__2024冀0481刑初101号.txt"
+    if not path.exists():
+        pytest.skip("缺少真实样本 S008")
+
+    report = plan(prepare(path), require_template=False, dry_run=True)
+    gaps = {}
+    for item in report.items:
+        assert item.consistency == "不一致"
+        warning = next(w for w in item.warnings if w.startswith("V1"))
+        gaps[item.defendant] = warning
+
+    assert "晚 5 天" in gaps["陈某"]
+    assert "晚 3 天" in gaps["刘某"]
+    assert "晚 1 天" in gaps["胡某凯"]
+
+
+def test_matching_declared_span_raises_no_warning():
+    """算出来与原文一致时不许有 V1/V2——校验恒报警，等于没有校验。"""
+    path = SAMPLES_DIR / "S001__冀0131刑初371号.txt"
+    if not path.exists():
+        pytest.skip("缺少真实样本 S001")
+
+    report = plan(
+        prepare(path),
+        require_template=False,
+        dry_run=True,
+        effective_date=date(2025, 2, 1),
+    )
+    for item in report.items:
+        assert item.consistency == "一致"
+        assert not [w for w in item.warnings if w[:2] in ("V1", "V2")]
 
 
 def test_control_offsets_are_flagged():

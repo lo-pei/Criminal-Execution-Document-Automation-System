@@ -114,8 +114,8 @@ def main() -> None:
     if stage != "empty":
         window._load(_input(stage))
     if stage == "combined":
-        # 数罪并罚样本的字段多出「并罚方式」一行，默认 690 高会把「量刑与刑期」
-        # 压到折线以下；这一张图是给人核对字段排布的，拉高到能一屏看全。
+        # 数罪并罚样本的字段多出「并罚方式」与「判决书载明」两行，默认 690 高会把
+        # 「量刑与刑期」压到折线以下；这一张图是给人核对字段排布的，拉高到能一屏看全。
         window.root.geometry("1000x1000")
     if stage == "locate":
         rows = review.build_fields(

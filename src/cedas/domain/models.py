@@ -201,6 +201,18 @@ class Defendant:
     civil_compensation: FieldValue = field(default_factory=blank)
 
     span: SentenceSpan = field(default_factory=SentenceSpan)
+    # C 组：判决书正文载明的刑期起止日（「即自X年X月X日起至Y年Y月Y日止」）。
+    # **只作校验输入，不作取值来源**（ADR-017）：载明值里含着羁押折抵，
+    # 系统无法从「起算日 + 刑期」重建它，一律推算就会出现「起算日对、届满日错」。
+    text_start: FieldValue = field(default_factory=blank)
+    text_end: FieldValue = field(default_factory=blank)
+
+    @property
+    def declared_span(self) -> tuple[Optional[date], Optional[date]]:
+        """判决书载明的 (起日, 止日)。未载明时为 ``(None, None)``。"""
+        start = self.text_start.value if isinstance(self.text_start.value, date) else None
+        end = self.text_end.value if isinstance(self.text_end.value, date) else None
+        return start, end
 
     @property
     def display_name(self) -> str:

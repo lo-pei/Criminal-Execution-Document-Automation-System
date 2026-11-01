@@ -54,6 +54,25 @@ def _strip_marker(text: str, markers: Sequence[str]) -> str:
     return text.strip(" 　：:，,。")
 
 
+def text_before_end_marker(text: str) -> str:
+    """切掉段落里属于落款的那部分（「如不服本判决…」及其后文字）。
+
+    清洗层按「上一行有没有句末标点」决定拼不拼接，而刑期注释段以「）」结尾，
+    不算句末标点，于是真实判决里最后一名被告人的注释段常常和上诉告知挤在同一
+    自然段：
+
+        （刑期从判决执行之日起计算……即自2024年9月19日起至2025年3月18日止。罚金已缴纳）如不服本判决，可在……
+
+    这一段的前半属主文、后半属落款，按段落归属只能二选一。切在标记处，两边都拿得到。
+    """
+    cut = len(text)
+    for marker in BODY_END_MARKERS:
+        position = text.find(marker)
+        if position != -1:
+            cut = min(cut, position)
+    return text[:cut]
+
+
 def locate(paragraphs: Sequence[ProseParagraph]) -> Anchors:
     """定位三段区间。
 
@@ -71,15 +90,32 @@ def locate(paragraphs: Sequence[ProseParagraph]) -> Anchors:
     body_first = start_index if remainder else start_index + 1
 
     end_index = _find_marker(paragraphs[body_first:], BODY_END_MARKERS)
-    body_last = body_first + end_index if end_index is not None else len(paragraphs)
+    if end_index is None:
+        body_stop = len(paragraphs)
+        body_last = len(paragraphs)
+    else:
+        body_last = body_first + end_index
+        # 落款标记常与最后一项判决挤在同一段（见 :func:`text_before_end_marker`）。
+        # 标记之前还有内容时，这一段仍算主文——不并进去，最后一名被告人的
+        # 载明起止日就落在锚点之外，一份两人判决只有一个人抽到，且不会报错。
+        has_body_part = bool(text_before_end_marker(paragraphs[body_last].text).strip())
+        body_stop = body_last + 1 if has_body_part else body_last
 
     return Anchors(
         head=slice(0, start_index),
-        body=slice(body_first, body_last),
+        body=slice(body_first, body_stop),
+        # 交界那一段两边都要：主文要它的前半，落款要它的后半。
         tail=slice(body_last, len(paragraphs)),
         body_start_index=body_first,
         body_end_index=body_last,
     )
 
 
-__all__ = ["BODY_END_MARKERS", "BODY_START_MARKERS", "AnchorNotFoundError", "Anchors", "locate"]
+__all__ = [
+    "BODY_END_MARKERS",
+    "BODY_START_MARKERS",
+    "AnchorNotFoundError",
+    "Anchors",
+    "locate",
+    "text_before_end_marker",
+]

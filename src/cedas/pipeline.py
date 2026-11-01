@@ -10,9 +10,10 @@
    ``allow_missing`` 只是现场应急口子，用时报告会标记 ``degraded``——
    生成一份缺身份证号的执行通知书，比不生成更危险（§3.7 同理）。
 
-2. **起算日两级来源，且来源必须可见。** 判决书载明则用载明的（实测 53% 的主文
-   不载明）；退回「判决生效日」是 C 组人工录入的法定路径，不是猜测。但报告里
-   必须写出 ``start_source``，否则复核的人无从判断这份文书能不能直接用。
+2. **起算日两级来源，且来源必须可见。** 有判决书载明的起止日就照着核，没有才退回
+   「判决生效日」——这是 C 组人工录入的法定路径，不是猜测。但报告里必须写出
+   ``start_source``，否则复核的人无从判断这份文书能不能直接用。载明值本身只作
+   校验（ADR-017），不进文书：它含着折抵与已执行刑期，系统算不出，抄下来也无人核对。
 
 3. **版本号在渲染前探测。** 同案同人同文书类型重复生成不覆盖旧件，
    文件名带 ``v2``/``v3``，台账记版本。法院要的是可追溯，不是最新版。
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .calc import compute_span, resolve_start
+from .calc.consistency import check as check_consistency
 from .config import DB_PATH, OUTPUT_DIR, REQUIRED_FIELDS, ensure_data_dirs
 from .domain.enums import PrincipalType
 from .domain.models import Case, Defendant, ProseParagraph, SentenceSpan
@@ -77,6 +79,12 @@ class DocumentItem:
     combination: str = ""
     start: Optional[date] = None
     end: Optional[date] = None
+    # 判决书载明的起止日（未载明为 None）。与 start/end 并列供复核比对：
+    # 文书用的是 start/end，载明值只是「原文这么写」的证据。
+    text_start: Optional[date] = None
+    text_end: Optional[date] = None
+    # 一致性结论（一致 / 不一致 / 文本未载明 / 不适用）。
+    consistency: str = ""
     context: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -94,6 +102,9 @@ class DocumentItem:
             "path": str(self.path) if self.path else None,
             "start": self.start.isoformat() if self.start else None,
             "end": self.end.isoformat() if self.end else None,
+            "text_start": self.text_start.isoformat() if self.text_start else None,
+            "text_end": self.text_end.isoformat() if self.text_end else None,
+            "consistency": self.consistency,
             "start_source": self.start_source,
             "combination": self.combination,
             "blockers": self.blockers,
@@ -276,8 +287,17 @@ def check_blockers(case: Case, defendant: Defendant, span: SentenceSpan) -> list
     if span.start is None:
         if defendant.combination.needs_manual_start:
             hint = start_hint(defendant.combination)
+            declared = defendant.declared_span
+            # 判决书自己写明了起止日就把日期摊给承办人：并罚案件最缺的不是提示语，
+            # 是一个可以直接誊抄的日子。仍不自动采用——载明值里有折抵（ADR-017）。
+            bearing = (
+                f"；判决书载明 {declared[0]} 至 {declared[1]}，核对后可据此填写"
+                if declared[0] and declared[1]
+                else ""
+            )
             blockers.append(
-                f"E-START-COMBINED 并罚案件（{defendant.combination.value}）须人工填写起算日：{hint}"
+                f"E-START-COMBINED 并罚案件（{defendant.combination.value}）"
+                f"须人工填写起算日：{hint}{bearing}"
             )
         else:
             blockers.append("E-START 无起算日（判决书未载明，且未录入生效日期）")
@@ -452,6 +472,21 @@ def _plan_item(
         start_date=start_date,
         effective_date=effective_date,
     )
+    # 与判决书载明的起止日比对。载明值不进文书（ADR-017），但「算出来多少、
+    # 原文写多少、差几天」必须出现在报告里——起算日是本系统唯一算出来的值，
+    # 算错没人会去验算，只有把两边摆在一起才有人看得见。
+    months = (
+        defendant.merged_months.value
+        if isinstance(defendant.merged_months.value, int)
+        else None
+    )
+    span, consistency_warnings = check_consistency(
+        span,
+        *defendant.declared_span,
+        months=months,
+        days=defendant.merged_days,
+        defendant_label=defendant.display_name,
+    )
     # 回写到被告人身上：映射表的派生字段（起日/止日/释放日）读的是
     # ``defendant.span``，不回写就会出现「报告说 6 月 1 日起算、文书里却是空白」。
     defendant.span = span
@@ -463,7 +498,11 @@ def _plan_item(
         end=span.end,
         start_source=start_source,
         combination=defendant.combination.value,
+        text_start=defendant.declared_span[0],
+        text_end=defendant.declared_span[1],
+        consistency=span.consistency.value,
     )
+    item.warnings.extend(f"{w.code} {w.message}" for w in consistency_warnings)
     item.blockers = check_blockers(case, defendant, span)
     if defendant.is_combined:
         item.warnings.append("W-COMBINED 数罪并罚，决定执行刑期按主文「决定执行」部分")

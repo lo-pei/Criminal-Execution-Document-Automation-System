@@ -47,8 +47,13 @@ def summarize(path: Path) -> list[str]:
         if d.span is not None:
             lines.append(
                 f"         起止 {d.span.start} ~ {d.span.end}"
-                f" 一致性 {d.span.consistency}"
+                f" 一致性 {d.span.consistency.value}"
             )
+        # 载明值与计算值分行写：核对时用的正是「原文这么写 vs 系统这么算」这一栏，
+        # 挤在一行会看串。判决书不写起止日是常态，此时只留空不解释。
+        start, end = d.declared_span
+        if start is not None or end is not None:
+            lines.append(f"         载明 {start} ~ {end}")
 
     for w in result.warnings:
         lines.append(f"  ! {w}")

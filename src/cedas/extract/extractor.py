@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Optional
 
+from ..calc.consistency import check as check_consistency
 from ..calc.sentence import compute_span
 from ..config import rule_search_dirs
 from ..domain.enums import PrincipalType
@@ -84,26 +85,42 @@ def _field_to_dict(fv: FieldValue) -> dict[str, Any]:
 _PRINCIPAL_BY_VALUE = {member.value: member for member in PrincipalType}
 
 
-def _attach_spans(defendants: Sequence[Defendant]) -> None:
-    """按主刑种类与月数计算刑期区间。
+def _attach_spans(defendants: Sequence[Defendant]) -> list[ExtractionWarning]:
+    """按主刑种类与月数计算刑期区间，并与判决书载明的起止日比对。
 
     这里只**调用** calc，不做日期运算——起点取最早羁押日，未在押时为空，
     由复核界面补录入（字段字典 C 组）。
+
+    校验结果一并返回：``cedas extract`` 的输出与 ``tools/sample_report.py`` 的摘要
+    是采集样本、排查缺陷时唯一的观察窗口，让不一致只出现在 render 阶段，
+    等于把问题藏到最后一公里。
     """
+    warnings: list[ExtractionWarning] = []
     for defendant in defendants:
         principal = _PRINCIPAL_BY_VALUE.get(str(defendant.merged_type.value), PrincipalType.UNKNOWN)
         months = defendant.merged_months.value
-        defendant.span = compute_span(
+        months = months if isinstance(months, int) else None
+        span = compute_span(
             principal_type=principal,
-            months=months if isinstance(months, int) else None,
+            months=months,
             days=defendant.merged_days,
             start=defendant.custody_start,
         )
+        defendant.span, produced = check_consistency(
+            span,
+            *defendant.declared_span,
+            months=months,
+            days=defendant.merged_days,
+            defendant_label=defendant.display_name,
+        )
+        warnings.extend(produced)
+    return warnings
 
 
 def _defendant_to_dict(defendant: Defendant) -> dict[str, Any]:
     """被告人序列化。日期统一转 ISO，界面与下游只认一种格式。"""
     span = defendant.span
+    declared = defendant.declared_span
 
     def iso(value):
         return value.isoformat() if isinstance(value, date) else value
@@ -151,6 +168,10 @@ def _defendant_to_dict(defendant: Defendant) -> dict[str, Any]:
             "end": iso(span.end),
             "months": span.months,
             "consistency": span.consistency.value,
+            # 判决书载明的起止日。与上两项并列而非合并：一致性校验要能一眼看出
+            # 「算出来的」和「抄下来的」分别是多少。
+            "declared_start": iso(declared[0]),
+            "declared_end": iso(declared[1]),
         },
     }
 
@@ -229,7 +250,7 @@ def extract(
     result.defendants = extract_defendants(paragraphs, anchors)
     result.warnings.extend(extract_case_info(result.case, paragraphs, result.anchors))
     attach_to_case(result.case, result.defendants)
-    _attach_spans(result.defendants)
+    result.warnings.extend(_attach_spans(result.defendants))
 
     # 单位犯罪：对「被告单位」只能判罚金，没有刑期，也就没有执行通知书。
     # 这类判决不会被当成「缺字段」报错，反而容易让人以为漏抽了一个被告人。

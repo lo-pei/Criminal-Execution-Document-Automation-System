@@ -137,6 +137,37 @@ def test_computed_fields_have_no_provenance():
     assert rows["届满日"].provenance == ""
 
 
+def test_declared_span_row_appears_only_when_the_judgment_states_it():
+    """判决书没写起止日时不许占一行。实测 53% 的主文不写，
+    固定留一行「—」等于给每个案件都添一条噪音。"""
+    document = _doc()
+    defendant = document.defendants[0]
+    labels = [row.label for row in review.build_fields(document, defendant)]
+    assert "判决书载明" not in labels
+
+    defendant.text_start.set(date(2023, 3, 1), provenance=Provenance(12, "即自2023年3月1日起"))
+    defendant.text_end.set(date(2026, 8, 31), provenance=Provenance(12, "至2026年8月31日止"))
+    rows = {row.label: row for row in review.build_fields(document, defendant)}
+
+    assert review.display_value(rows["判决书载明"]) == "2023年3月1日 至 2026年8月31日"
+    assert rows["判决书载明"].provenance.startswith("原文第 13 段")
+
+
+def test_declared_span_row_says_so_when_it_disagrees():
+    """不一致时这一行才是复核最该看的一行，结论要写在界面上，不能只进日志。"""
+    from cedas.domain.enums import Consistency
+
+    document = _doc()
+    defendant = document.defendants[0]
+    defendant.text_start.set(date(2023, 3, 1), provenance=Provenance(12, "即自2023年3月1日起"))
+    defendant.text_end.set(date(2026, 8, 26), provenance=Provenance(12, "至2026年8月26日止"))
+    defendant.span.consistency = Consistency.MISMATCH
+
+    rows = {row.label: row for row in review.build_fields(document, defendant)}
+
+    assert "不一致" in rows["判决书载明"].provenance
+
+
 # ---------------------------------------------------------------------------
 # 待办与结论
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ from datetime import date
 from enum import Enum
 from typing import Any, Optional, Sequence
 
-from ..domain.enums import CombinationKind
+from ..domain.enums import CombinationKind, Consistency
 from ..domain.models import Crime, Defendant, ProseParagraph
 from ..pipeline import DocumentItem, PipelineReport, PreparedDocument
 from ..render.formatting import format_cn_date, months_to_chinese
@@ -153,6 +153,8 @@ SPECS: tuple[_Spec, ...] = (
     # 并罚形态只在真并罚时出现（未并罚显示「—」）。复核的人必须看到它：
     # 先并后减与先减后并的起算日口径不同，看错一种就会把日期算错。
     _Spec(GROUP_TERM, "并罚方式", "defendant.combination"),
+    # 「判决书载明」不放进 SPECS：绝大多数判决书不写起止日（实测 53%），
+    # 固定占一行会让每个案件都多一条「—」。有值时才插在「起算日」上面一行。
     _Spec(GROUP_TERM, "起算日", "defendant.span.start", editable=True, kind="date",
           placeholder="如 2023-03-01"),
     _Spec(GROUP_TERM, "届满日", "defendant.span.end"),
@@ -198,6 +200,12 @@ def _raw(document: PreparedDocument, defendant: Defendant, path: str) -> Any:
     if path == "defendant.combination":
         # 「未并罚」不当值显示：绝大多数案件都没并罚，一行恒有值的信息是噪音。
         return "" if defendant.combination is CombinationKind.NONE else defendant.combination
+    if path == "defendant.text_span":
+        start, end = defendant.declared_span
+        if start is not None and end is not None:
+            return f"{format_cn_date(start)} 至 {format_cn_date(end)}"
+        # 只抽到半截就照实显示，不补齐：补哪一头都是编。
+        return format_cn_date(start or end) if (start or end) else ""
     if path.startswith("defendant.span."):
         return getattr(defendant.span, path.rsplit(".", 1)[1], None)
 
@@ -211,6 +219,14 @@ def _provenance(document: PreparedDocument, defendant: Defendant, path: str) -> 
     """取「依据」：字段来自原文第几段。计算值没有段落，返回空。"""
     if path.startswith("defendant.span.") or path in ("defendant.term_text", "defendant.combination"):
         return "", None
+    if path == "defendant.text_span":
+        paragraph = _text_span_provenance(defendant)
+        if paragraph is None:
+            return "", None
+        # 载明值只作校验，不一致时这一行才是复核最该看的一行，把结论写在「依据」里
+        # ——界面上一行只有一处可放宽的文字，值列必须留给原文日期。
+        suffix = " · 与算法不一致" if defendant.span.consistency is Consistency.MISMATCH else ""
+        return f"原文第 {paragraph + 1} 段{suffix}", paragraph
     if path == "defendant.crimes":
         for crime in defendant.crimes:
             provenance = crime.charge.provenance
@@ -231,6 +247,14 @@ def _provenance(document: PreparedDocument, defendant: Defendant, path: str) -> 
     )
 
 
+def _text_span_provenance(defendant: Defendant) -> Optional[int]:
+    for field_value in (defendant.text_start, defendant.text_end):
+        provenance = field_value.provenance
+        if provenance is not None:
+            return provenance.paragraph_index
+    return None
+
+
 def build_fields(
     document: PreparedDocument,
     defendant: Defendant,
@@ -240,6 +264,10 @@ def build_fields(
     """一名被告人的全部字段行，按「案件信息 → 罪犯信息 → 量刑 → 程序」排列。"""
     rows: list[FieldRow] = []
     for spec in SPECS:
+        if spec.path == "defendant.span.start":
+            declared = _declared_row(document, defendant)
+            if declared is not None:
+                rows.append(declared)
         display = _text(_raw(document, defendant, spec.path))
         provenance, index = _provenance(document, defendant, spec.path)
         note = ""
@@ -262,6 +290,28 @@ def build_fields(
             )
         )
     return rows
+
+
+def _declared_row(document: PreparedDocument, defendant: Defendant) -> Optional[FieldRow]:
+    """「判决书载明」那一行。没载明就整行不出现。"""
+    value = _raw(document, defendant, "defendant.text_span")
+    if not value:
+        return None
+    provenance, index = _provenance(document, defendant, "defendant.text_span")
+    note = (
+        "与算出来的日期不一致，请核对原文"
+        if defendant.span.consistency is Consistency.MISMATCH
+        else ""
+    )
+    return FieldRow(
+        group=GROUP_TERM,
+        label="判决书载明",
+        value=_text(value),
+        path="defendant.text_span",
+        provenance=provenance,
+        paragraph_index=index,
+        note=note,
+    )
 
 
 def display_value(row: FieldRow) -> str:
