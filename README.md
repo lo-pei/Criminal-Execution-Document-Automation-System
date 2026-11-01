@@ -135,7 +135,7 @@ ui  ──▶  pipeline  ──▶  storage / render / extract  ──▶  inges
 # 依赖（开发期）
 python -m pip install -e ".[dev]"
 
-# 跑单元测试（当前 206 项）
+# 跑单元测试（当前 310 项）
 python -m pytest -q
 
 # 命令行自检：解析刑期
@@ -246,7 +246,7 @@ python tools\build_offline.py
 │   ├── pipeline.py            # 端到端：判决书 → 文书，唯一知道命名与归档的地方
 │   └── ui/                    # 表现层：主窗口、字段表、原文面板、视图模型
 ├── packaging/                 # 打包配置（PyInstaller spec 与入口薄壳）
-├── tests/                     # 单元测试与回归夹具（206 项）
+├── tests/                     # 单元测试与回归夹具（310 项）
 ├── resources/rules/           # 规则库（外部 JSON，可热替换，不随程序版本锁定）
 ├── resources/templates/       # 文书模板说明（模板原件不入库）
 ├── tools/                     # 开发工具脚本（建表、样本体检、离线打包）
@@ -262,7 +262,7 @@ python tools\build_offline.py
 ## 8. 质量保障
 
 ```bash
-python -m pytest -q                      # 206 项单元测试
+python -m pytest -q                      # 310 项单元测试
 python -m ruff check src tests tools packaging   # 静态检查，零告警
 python tools/sample_lint.py data/samples # 样本体检（数据库导出，默认 --source db）
 python tools/sample_lint.py examples --source pdf --min-chars 300  # 合成基线：查版式，不查字数
@@ -272,13 +272,13 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 保障项 | 机制 |
 | :--- | :--- |
-| 单元测试 | **206 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、真实文书回归、A/B/D 组抽取、渲染、归档、台账、界面文案与状态判定 |
+| 单元测试 | **310 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、真实文书回归、A/B/C/D 组抽取、并罚形态、载明起止日校验、渲染、归档、台账、界面文案与状态判定 |
 | 静态检查 | `ruff`，`select = E/F/W/I/N/UP/B/SIM/RUF`，零告警 |
 | 离线守门 | `tests/test_offline_guard.py` **静态断言**运行端无网络导入——把"不联网"变成可执行断言，而非文档承诺 |
 | 双通道一致性 | 同一份合成样本同时以 `.txt` 与 `.pdf` 入库，断言两条通道的段落文本、段落类型逐条相同——把 ADR-005 从文档承诺变成测试 |
 | 真实文书回归 | 36 份公开判决书主文中，17 份载明了刑期起止日；复算与载明值吻合 16 份，唯一例外为法定羁押折减。把「刑期算得对」变成可复跑的断言 |
 | 端到端出文 | 合成判决书 → 执行通知书，断言正文含刑期起止、落款日期、书记员，且**无残留占位符**；重跑自动升版本不覆盖旧件 |
-| 界面文案 | `ui/review.py` 是纯函数层（不 import tkinter），29 项测试锁住「待补充」「只差公民身份号码」这类句子与状态判定；错误码不得出现在屏幕上 |
+| 界面文案 | `ui/review.py` 是纯函数层（不 import tkinter），31 项测试锁住「待补充」「只差公民身份号码」这类句子与状态判定；错误码不得出现在屏幕上 |
 | 3.8 兼容守门 | `ast.parse(feature_version=(3,8))` + 运行时 API 黑名单。CI 矩阵跑 3.9/3.11，本地守门覆盖 3.8 差异 |
 | 敏感数据守门 | CI 拒绝 `data/`、`*.docx`、`*.xlsx`、`*.zip` 进入版本库 |
 | 打包冒烟测试 | 产物内跑 `cedas-cli doctor --json`，校验 `ok` / `rule_count` / `frozen` |
@@ -287,11 +287,11 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 指标 | 数值 |
 | :--- | ---: |
-| 源码行数 | 6,086（`src/cedas/`，34 个模块） |
-| 测试行数 | 2,216 |
-| 工具脚本行数 | 1,975 |
+| 源码行数 | 7,606（`src/cedas/`，37 个模块） |
+| 测试行数 | 3,363 |
+| 工具脚本行数 | 2,163 |
 | 规则文件 | 2（`head_case_no.v1` / `head_court_name.v1`） |
-| 文档 | 10 篇规格 + 过程记录 |
+| 文档 | 13 篇规格 + 过程记录 |
 
 ---
 
@@ -311,7 +311,7 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 | `ui/` | 🟡 可用，未上真机 | 待办 / 字段与依据 / 原文定位 / 原地补录已接通 `pipeline`；**未在 Win7 1024×768 实机校字号** |
 | 离线交付 | ✅ 链路验证通过 | 87.5 MB / 1020 文件 / zip 46.3 MB；**交付包需用 3.8.10 重打** |
 
-> **已运行验证**：206 项单元测试全绿、`ruff` 零告警、打包冒烟测试通过、36 份真实判决主文的刑期回归、
+> **已运行验证**：310 项单元测试全绿、`ruff` 零告警、打包冒烟测试通过、36 份真实判决主文的刑期回归、
 > 合成模板端到端出文并通过归档与台账、界面在 1000×690 下逐状态截图核对。
 > **未验证**：清洗命中率、身份字段命中率、**法院真实模板的占位符兼容性**、目标机（Win7 2GB）实机耗时与字号。
 > **不要把"测试通过"当成"功能可用"。**
