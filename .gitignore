@@ -32,6 +32,7 @@ packaging/version_info.txt
 # ---- 敏感数据：真实案件材料一律不入库 ----
 data/samples/*
 !data/samples/.gitkeep
+!data/samples/README.md
 data/truth/*
 !data/truth/.gitkeep
 data/output/*

@@ -12,7 +12,7 @@
     "身份证号": "defendant.id_number",
     "民族": "defendant.ethnicity",
     "住址": "defendant.domicile",
-    "罪名": "defendant.crimes.0.charge",
+    "罪名": "defendant.charges_text",
     "主刑": "defendant.merged_type",
     "刑期": "defendant.merged_term_cn",
     "刑期起日": "defendant.span_start",

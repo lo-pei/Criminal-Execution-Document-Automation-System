@@ -32,6 +32,7 @@ from .config import DB_PATH, OUTPUT_DIR, REQUIRED_FIELDS, ensure_data_dirs
 from .domain.enums import PrincipalType
 from .domain.models import Case, Defendant, ProseParagraph, SentenceSpan
 from .extract import extract
+from .extract.combination import start_hint
 from .extract.doc_type import DocKind, detect_doc_kind
 from .ingest import read_document
 from .ingest.cleaner import clean
@@ -71,6 +72,9 @@ class DocumentItem:
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     start_source: str = ""
+    # 并罚形态。界面上要能看到，因为先并后减与先减后并的起算日口径不同，
+    # 复核的人必须知道自己在看哪一种。
+    combination: str = ""
     start: Optional[date] = None
     end: Optional[date] = None
     context: dict[str, str] = field(default_factory=dict)
@@ -91,6 +95,7 @@ class DocumentItem:
             "start": self.start.isoformat() if self.start else None,
             "end": self.end.isoformat() if self.end else None,
             "start_source": self.start_source,
+            "combination": self.combination,
             "blockers": self.blockers,
             "warnings": self.warnings,
             "context": self.context,
@@ -185,6 +190,21 @@ def resolve_span(
     start = start_date
     source = "人工指定" if start_date is not None else ""
 
+    if start is None and defendant.combination.needs_manual_start:
+        # 先并后减、先减后并、撤销缓刑并罚：起算日**不是**本罪的羁押日。
+        # 判决书写「已经执行的刑期计算在本判决决定的刑期以内」，却没有一句
+        # 写出这个起算日；按羁押日自动算必然错，而这种错在文书上看不出来
+        # （见 ADR-016）。宁可停在这里要人填，也不出一份起算日错的文书。
+        return (
+            compute_span(
+                principal_type=principal,
+                months=months,
+                days=defendant.merged_days,
+                start=None,
+            ),
+            "",
+        )
+
     if start is None:
         start = resolve_start(
             principal,
@@ -245,12 +265,24 @@ def check_blockers(case: Case, defendant: Defendant, span: SentenceSpan) -> list
 
     if not defendant.merged_type.is_present:
         blockers.append("E-PRINCIPAL 主刑未识别")
-    if not defendant.merged_months.is_present and defendant.merged_days <= 0:
+    elif str(defendant.merged_type.value) in ("无期徒刑", "死刑"):
+        # 无期与死刑没有刑期起止，也就没有执行通知书。此前会连报
+        # 「刑期未识别」「无起算日」「无届满日」三条，看起来像抽取坏了。
+        blockers.append("E-LIFE 主刑为无期徒刑或死刑，无刑期起止，不生成执行通知书")
+        return blockers
+    elif not defendant.merged_months.is_present and defendant.merged_days <= 0:
         blockers.append("E-TERM 刑期未识别")
+
     if span.start is None:
-        blockers.append("E-START 无起算日（判决书未载明，且未录入生效日期）")
+        if defendant.combination.needs_manual_start:
+            hint = start_hint(defendant.combination)
+            blockers.append(
+                f"E-START-COMBINED 并罚案件（{defendant.combination.value}）须人工填写起算日：{hint}"
+            )
+        else:
+            blockers.append("E-START 无起算日（判决书未载明，且未录入生效日期）")
     elif span.end is None:
-        blockers.append("E-END 无届满日（主刑为无期/死刑，或刑期不完整）")
+        blockers.append("E-END 无届满日（刑期不完整）")
 
     return blockers
 
@@ -430,16 +462,33 @@ def _plan_item(
         start=span.start,
         end=span.end,
         start_source=start_source,
+        combination=defendant.combination.value,
     )
     item.blockers = check_blockers(case, defendant, span)
     if defendant.is_combined:
         item.warnings.append("W-COMBINED 数罪并罚，决定执行刑期按主文「决定执行」部分")
+    if defendant.combination.needs_manual_start and span.start is not None:
+        # 起算日还没填时由 E-START 阻断（那里已写明口径），这里只在填好之后
+        # 提醒复核的人核对一遍：并罚案件的起算日对错在文书上看不出来。
+        item.warnings.append(
+            f"W-START-MANUAL {defendant.combination.value}：起算日按人工填写，"
+            f"请核对口径（{start_hint(defendant.combination)}）"
+        )
     if defendant.probation.applied.value:
         item.warnings.append("W-PROBATION 缓刑案件是否走本系统待业务方确认（口径 P5）")
     if start_source == "生效日期":
         item.warnings.append("W-START-EFFECTIVE 判决书未载明起算日，已按生效日期起算")
     if not case.effective_date.is_present:
         item.warnings.append("W-NO-EFFECTIVE 生效日期未录入，文书该处留空（C 组需人工补）")
+    if _principal(defendant) is PrincipalType.CONTROL and defendant.custody:
+        # 管制按羁押 1 日折抵刑期 2 日（刑法 41 条），但「关了多少天」不是能从
+        # 首部直接读出来的：强制措施段只记起点，解除日期要靠下一条措施反推，
+        # 末段仍在押时更无从确定。系统不猜这个天数（见 docs/09「已知缺口」），
+        # 只提醒复核的人去填，否则届满日会整体偏后，而文书上看不出来。
+        item.warnings.append(
+            "W-CONTROL-OFFSET 管制案件：羁押 1 日折抵刑期 2 日，"
+            "当前未计折抵，请在复核界面填写实际羁押天数"
+        )
 
     item.context = build_context(case, defendant, mapping)
     return item

@@ -21,6 +21,7 @@ from datetime import date
 from enum import Enum
 from typing import Any, Optional, Sequence
 
+from ..domain.enums import CombinationKind
 from ..domain.models import Crime, Defendant, ProseParagraph
 from ..pipeline import DocumentItem, PipelineReport, PreparedDocument
 from ..render.formatting import format_cn_date, months_to_chinese
@@ -39,7 +40,9 @@ BLOCKER_HINTS = {
     "E-PRINCIPAL": "没认出主刑",
     "E-TERM": "没认出刑期长短",
     "E-START": "还缺起算日（判决书没写，也没填生效日期）",
+    "E-START-COMBINED": "并罚案件要人工填起算日",
     "E-END": "算不出届满日",
+    "E-LIFE": "无期徒刑或死刑，没有刑期起止",
     "E-FIELD": "有必填项没填",
 }
 
@@ -147,6 +150,9 @@ SPECS: tuple[_Spec, ...] = (
     _Spec(GROUP_TERM, "罪名", "defendant.crimes", required=True),
     _Spec(GROUP_TERM, "主刑", "defendant.merged_type"),
     _Spec(GROUP_TERM, "刑期", "defendant.term_text"),
+    # 并罚形态只在真并罚时出现（未并罚显示「—」）。复核的人必须看到它：
+    # 先并后减与先减后并的起算日口径不同，看错一种就会把日期算错。
+    _Spec(GROUP_TERM, "并罚方式", "defendant.combination"),
     _Spec(GROUP_TERM, "起算日", "defendant.span.start", editable=True, kind="date",
           placeholder="如 2023-03-01"),
     _Spec(GROUP_TERM, "届满日", "defendant.span.end"),
@@ -189,6 +195,9 @@ def _raw(document: PreparedDocument, defendant: Defendant, path: str) -> Any:
         return _charges(defendant.crimes)
     if path == "defendant.term_text":
         return _term(defendant)
+    if path == "defendant.combination":
+        # 「未并罚」不当值显示：绝大多数案件都没并罚，一行恒有值的信息是噪音。
+        return "" if defendant.combination is CombinationKind.NONE else defendant.combination
     if path.startswith("defendant.span."):
         return getattr(defendant.span, path.rsplit(".", 1)[1], None)
 
@@ -200,7 +209,7 @@ def _raw(document: PreparedDocument, defendant: Defendant, path: str) -> Any:
 
 def _provenance(document: PreparedDocument, defendant: Defendant, path: str) -> tuple[str, Optional[int]]:
     """取「依据」：字段来自原文第几段。计算值没有段落，返回空。"""
-    if path.startswith("defendant.span.") or path == "defendant.term_text":
+    if path.startswith("defendant.span.") or path in ("defendant.term_text", "defendant.combination"):
         return "", None
     if path == "defendant.crimes":
         for crime in defendant.crimes:

@@ -77,3 +77,27 @@ class Consistency(str, Enum):
 class Gender(str, Enum):
     MALE = "男"
     FEMALE = "女"
+
+
+class CombinationKind(str, Enum):
+    """数罪并罚的形态。
+
+    区分这四种不是为了在文书上写出来，而是因为**起算日来源不同**：
+    第 69 条按本罪羁押日起算，第 70/71/77 条的起算日必须人工指定
+    （见 ``extract/combination.py`` 与 ADR-016）。
+    """
+
+    NONE = "未并罚"
+    MERGE = "数罪并罚"
+    MERGE_THEN_DEDUCT = "先并后减"
+    DEDUCT_THEN_MERGE = "先减后并"
+    REVOKE_PROBATION = "撤销缓刑并罚"
+
+    @property
+    def needs_manual_start(self) -> bool:
+        """起算日是否必须人工指定。"""
+        return self in (
+            CombinationKind.MERGE_THEN_DEDUCT,
+            CombinationKind.DEDUCT_THEN_MERGE,
+            CombinationKind.REVOKE_PROBATION,
+        )

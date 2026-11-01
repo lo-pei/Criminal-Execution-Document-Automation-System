@@ -14,6 +14,7 @@ from typing import Any, Generic, Optional, TypeVar
 
 from .enums import (
     AdditionalType,
+    CombinationKind,
     Consistency,
     CustodyType,
     FieldStatus,
@@ -192,6 +193,9 @@ class Defendant:
     # 「拘役一个月十五日」里的「十五日」。与 merged_months 并列，不折算成月：
     # 折算必然引入误差，而它直接决定届满日。
     merged_days: int = 0
+    # 并罚形态。不包 FieldValue：它不是从某一句抄来的值，而是对主文
+    # 整体作出的判定，指到某一段反而是假溯源。它决定起算日怎么来。
+    combination: CombinationKind = CombinationKind.NONE
     probation: Probation = field(default_factory=Probation)
     recovery: FieldValue = field(default_factory=blank)
     civil_compensation: FieldValue = field(default_factory=blank)

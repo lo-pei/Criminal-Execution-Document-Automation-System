@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Optional
 
-from ..calc.term_parser import TermParseError, parse_term
+from ..calc.term_parser import ParsedTerm, TermParseError, cn_number_to_int, parse_term
 from ..domain.enums import AdditionalType, CustodyType
 from ..domain.models import (
     AdditionalPunishment,
@@ -34,35 +34,68 @@ from ..domain.models import (
     CustodySegment,
     Defendant,
     FieldValue,
-    Probation,
     ProseParagraph,
 )
 from .anchors import Anchors
+from .combination import detect_combination
 
 # --- 首部：身份信息 --------------------------------------------------------
-# 「被告人张三，男，1985年3月2日出生……」——以逗号紧跟姓名是最稳的判据，
+# 「被告人张三，男，1985年3月2日出生……」——姓名后紧跟标点是最稳的判据，
 # 主文里的「被告人张三犯盗窃罪」用逗号或直接接动词，不会误命中。
-_NAME_RE = re.compile(r"^被告人([\u4e00-\u9fa5]{1,4})[，,]")
+#
+# 句号也算：简易程序或被告人身份信息不全的判决书写「被告人颜某。曾因犯盗窃罪……」
+# （见（2014）甬余刑初字第633号），姓名后直接断句，只认逗号会让整份文书的
+# 被告人一个都认不出，连带主文归属全部落空。
+_NAME_RE = re.compile(r"^被告人([\u4e00-\u9fa5]{1,4})[，,。]")
 _GENDER_RE = re.compile(r"[，,](男|女)[，,]")
 _BIRTH_RE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日出生")
 _ID_RE = re.compile(r"公民身份号码\s*([0-9]{17}[0-9Xx])")
 _ETHNICITY_RE = re.compile(r"[，,]([\u4e00-\u9fa5]{1,4})族[，,]")
-_DOMICILE_RE = re.compile(r"住([^。；;]+?)[。；;]")
+# 住址。「住」前面若是「居」，那是「监视居住」「指定居所监视居住」「居住地」，
+# 不是住址字段：（2014）甬余刑初字第633号首部没有任何住址信息，
+# 却因为「依法监视居住，同月6日被依法变更为刑事拘留……」抽出一串强制措施文字，
+# 复核界面上看起来像是把羁押经过错填进了住址栏。
+_DOMICILE_RE = re.compile(r"(?<!居)住([^。；;，,]{2,40})")
 _EDUCATION_RE = re.compile(r"(文盲|小学|初中|高中|中专|大专|本科|硕士|博士|研究生)(?:文化|学历)")
 _DETENTION_PLACE_RE = re.compile(r"现羁押于([^。；;]+?)[。；;]")
+# 强制措施。「被」后面常插着机关名：「于2024年9月19日被平山县公安局刑事拘留」
+# 「经平山县人民检察院批准，于2024年10月24日被执行逮捕」——真实判决十有八九这么写，
+# 只认「被+措施名」会一条都抽不到，羁押起始日随即缺失，起算日整条断掉。
+#
+# 日期与「被」之间还要能容纳案由：（2014）梁刑初字第12号写的是
+# 「2013年9月28日因涉嫌抢劫罪被梁山县公安局刑事拘留，同年10月23日经梁山县
+# 人民检察院批准被逮捕」——「因涉嫌抢劫罪」夹在日期和「被」之间，
+# 「经…批准」夹在日期和「被」之间。要求「日」后紧跟「被」会把两处都漏掉，
+# 整份判决书的羁押信息全空。允许中间夹至多 15 字，但不跨句（不越过，。；）。
 _MEASURE_RE = re.compile(
-    r"(?:于|自)?(?:(\d{4})年|同年)(\d{1,2})月(\d{1,2})日(?:被|起被)"
+    r"(?:于|自)?(?:(\d{4})年|同年)(\d{1,2})月(\d{1,2})日"
+    r"[^，。；]{0,15}?"
+    r"(?:被|由|起被)"
+    r"[^，。；]{0,20}?"
     r"(刑事拘留|逮捕|取保候审|监视居住|指定居所监视居住)"
 )
+# 供「同年」补年份用：段内任意一处四位数年份，不要求紧跟强制措施。
+_YEAR_RE = re.compile(r"(\d{4})年")
 
 # --- 主文：定罪与量刑 ------------------------------------------------------
-# 贪婪匹配到逗号为止：多罪名「犯盗窃罪、诈骗罪」必须整体取出再拆，
-# 用非贪婪只能拿到第一个罪名。
-_CHARGE_RE = re.compile(r"犯([^，,。；]+)罪")
+# 罪名与刑期必须**成对**取：判决书主文写「犯A罪，判处X；犯B罪，判处Y」，
+# 只取第一个「判处」会让数罪并罚的后几个罪名全部没有刑期，
+# 决定执行刑期也会被错当成第一个罪的刑期（数罪并罚样本实测差 78 个月）。
+_PAIR_RE = re.compile(r"犯([^，,。；]+)[，,]?\s*判处([^，,。；]+)")
+# 「数罪并罚，决定执行有期徒刑九年」——这一句才是执行通知书要的刑期，
+# 它不在「犯X罪，判处Y」的句式里，必须单独取。
+_DECISION_RE = re.compile(r"决定执行([^，,。；]+)")
+# 无配对时的兜底（判决书写「判处被告人张三有期徒刑三年」这类非常规句式）
 _SENTENCE_RE = re.compile(r"判处([^，,。；]+)")
 # 罚金数额中文、阿拉伯混用：「五千元」「10 万元」「人民币5000元」
 _FINE_RE = re.compile(r"并处罚金(?:人民币)?([\d.]+|[一二三四五六七八九十百千]+)(万)?元")
 _PROBATION_RE = re.compile(r"缓刑([\u4e00-\u9fa5\d]{1,6}年)")
+# 主文里「被告人」后紧跟的姓名不再用正则取，改为与已知姓名直接比对
+# （见 ``index_body``）。分项编号前缀，判续段前要先剥掉。
+_SECTION_PREFIX_RE = re.compile(r"^[（(]?[一二三四五六七八九十]{1,3}[）)、．.]\s*")
+# 续段特征：数罪并罚的「决定执行」、先并后减的「与前罪…并罚」、
+# 撤销缓刑的「撤销…」「把前罪…」都自成一段，且段内不再出现姓名。
+_CONTINUATION_HEADS = ("犯", "数罪并罚", "决定执行", "与前罪", "将前罪", "把前罪", "撤销")
 
 _CUSTODY_TYPES = {
     "刑事拘留": CustodyType.DETENTION,
@@ -195,14 +228,29 @@ def _parse_custody(block: Sequence[ProseParagraph]) -> list[CustodySegment]:
     判决书里第二段起的日期常写「同年 3 月 14 日被逮捕」，省略年份。年份必须
     沿用同一块的上一处，不能默认当年——跨年羁押时（12 月拘留、1 月逮捕）
     按当年补会算错一年。
+
+    「同年」的年份来源不限于强制措施句。真实文书常见这样的连写：
+
+        于2020年7月8日被抓获，同年7月10日被淮滨县公安局刑事拘留，
+        同年7月24日被取保候审。
+
+    「抓获」不是法定强制措施，`_MEASURE_RE` 不匹配它，若只在措施句里取年份，
+    这一串会因年份未知被整段跳过，羁押 14 天凭空消失。所以段内任何一处
+    `YYYY年` 都要先登记下来，供其后的「同年」沿用。
     """
     segments: list[CustodySegment] = []
     year: Optional[int] = None
 
     for paragraph in block:
-        for match in _MEASURE_RE.finditer(paragraph.text):
+        text = paragraph.text
+        for match in _MEASURE_RE.finditer(text):
             if match.group(1):
                 year = int(match.group(1))
+            elif year is None:
+                # 「同年」且块内尚无年份：从本段此前的日期里补
+                prior = _YEAR_RE.findall(text[: match.start()])
+                if prior:
+                    year = int(prior[-1])
             if year is None:
                 continue
             start = _to_date(str(year), match.group(2), match.group(3))
@@ -250,76 +298,244 @@ def _money(text: str, unit_wan: bool) -> Optional[float]:
     return base * (10000 if unit_wan else 1)
 
 
-def _charges(text: str) -> list[str]:
-    """抽取罪名，多罪名以「、」分隔。返回去重后保持原序。"""
-    names: list[str] = []
-    for raw in _CHARGE_RE.findall(text):
-        for part in re.split(r"[、和及]", raw):
-            name = part.strip().rstrip("罪")
-            if name and name not in names:
-                names.append(name)
-    return names
+def _charge_names(raw: str) -> list[str]:
+    """从一个「…罪」串里拆出罪名。
+
+    顿号只有在**每一段都以「罪」结尾**时才是罪名分隔符：
+    「盗窃罪、诈骗罪」是两个罪，而「掩饰、隐瞒犯罪所得罪」是一个罪——
+    按顿号无条件切会把后者切成「掩饰」与「隐瞒犯罪所得」两个不存在的罪名，
+    复核界面里看着像抽错了，实际是拆分规则错了。
+    """
+    text = raw.strip().rstrip("。；;，, ")
+    if not text.endswith("罪"):
+        return []
+    parts = [part.strip() for part in re.split(r"[、和及]", text) if part.strip()]
+    if len(parts) > 1 and all(part.endswith("罪") for part in parts):
+        return [part[:-1] for part in parts]
+    return [text[:-1]]
 
 
-def _apply_body(defendant: Defendant, body: Sequence[ProseParagraph]) -> None:
-    """在主文里找该被告人的定罪量刑表述，填 crimes 与决定执行刑期。"""
-    name = defendant.name.value
-    if not name:
-        return
+def index_body(
+    body: Sequence[ProseParagraph],
+    defendants: Sequence[Defendant],
+) -> dict[int, list[ProseParagraph]]:
+    """按主文顺序把段落归给被告人。
+
+    判决书主文的一「项」常常只写一次姓名，后面用「犯B罪，判处…」
+    「数罪并罚，决定执行…」续写，**续段里没有姓名**。只按「段落含姓名」
+    匹配会把续段丢掉，而「决定执行」刑期恰恰都在续段里——
+    实测数罪并罚样本因此少算 78 个月。
+
+    归类规则：段落出现「被告人+已知姓名」即切换当前被告人；出现并罚、
+    决定执行或续段开头词则沿用；其余（退赔、没收、附带民事赔偿）断开归属，
+    避免把民事赔偿金额当成罚金。
+    """
+    seq_by_name = {str(d.name.value): d.seq for d in defendants if d.name.is_present}
+    # 长名先匹配：同案有「张三」与「张三丰」时，短名会抢先吃进长名那段。
+    ordered = sorted(seq_by_name, key=len, reverse=True)
+    blocks: dict[int, list[ProseParagraph]] = {}
+    current: Optional[int] = None
 
     for paragraph in body:
-        text = paragraph.text
-        if "被告人" not in text or str(name) not in text:
-            continue
+        text = paragraph.text.strip()
+        # 用已知姓名直接比对，不用「被告人+2~4 个汉字」的正则：
+        # 「…对被告人郑十一宣告缓刑…」里的姓名后面跟的是动词而不是标点，
+        # 正则的右界条件会把这一段整个漏掉，连带丢掉它后面那句「决定执行」。
+        hit = next((name for name in ordered if f"被告人{name}" in text), None)
+        if hit is not None:
+            current = seq_by_name[hit]
+        elif "被告单位" in text:
+            # 单位判项不是这个自然人的。这一段既没有自然人姓名，又常含
+            # 「决定执行」，会被判成续段抵到上一个被告名下：
+            # （2023）沪0113刑初923号「一、被告单位某某公司1犯虚开增值税专用发票罪，
+            # 判处罚金……决定执行罚金五万元」就这么并进了王某的罪名表，
+            # 两个罪名抽成四个。单位部分不生成执行通知书（另有 A006 提示），直接跳过。
+            current = None
+        elif _is_continuation(text):
+            pass  # 续段，仍属上一个被告人
+        else:
+            current = None
 
-        charges = _charges(text)
-        sentence_match = _SENTENCE_RE.search(text)
-        if not charges or sentence_match is None:
-            continue
+        if current is not None:
+            blocks.setdefault(current, []).append(paragraph)
+    return blocks
 
-        try:
-            parsed = parse_term(sentence_match.group(1))
-        except TermParseError:
-            # 刑期文本异常时仍保留罪名，刑期留空由人工补——不能因为一句话
-            # 解析失败就丢掉整个罪名。
-            parsed = None
 
-        # 一罪一刑期时才能把「判处X」记到该罪名下。数罪并罚句里只有一个
-        # 「判处」结果，若每个罪名都挂同一个月数就是编数据，宁可只填决定执行刑期。
-        single_charge = len(charges) == 1
-        for charge in charges:
-            crime = Crime(raw_text=text)
-            crime.charge = _fv(charge, paragraph, "body_charge@v1")
-            if parsed is not None and single_charge:
-                crime.principal_type = _fv(parsed.principal_type.value, paragraph, "body_principal@v1")
-                if parsed.months is not None:
-                    crime.term_months = _fv(parsed.months, paragraph, "body_term@v1")
-            defendant.crimes.append(crime)
+def _is_continuation(text: str) -> bool:
+    """这段是否在续写上一个被告人的量刑（数罪并罚、先并后减等）。
 
-        if parsed is not None and not defendant.merged_type.is_present:
-            defendant.merged_type = _fv(parsed.principal_type.value, paragraph, "body_merged@v1")
-            if parsed.months is not None:
-                defendant.merged_months = _fv(parsed.months, paragraph, "body_merged@v1")
-            defendant.merged_days = parsed.days
+    先剥掉「二、」「（三）」这类分项编号：「二、数罪并罚，决定执行…」
+    段首是编号而不是特征词，不剥就判不出来。
+    """
+    if "并罚" in text or "决定执行" in text:
+        return True
+    return _SECTION_PREFIX_RE.sub("", text).startswith(_CONTINUATION_HEADS)
 
-        fine = _FINE_RE.search(text)
-        if fine and defendant.crimes:
-            amount = _money(fine.group(1), bool(fine.group(2)))
-            if amount is not None:
-                defendant.crimes[0].additional.append(
-                    AdditionalPunishment(
-                        type=AdditionalType.FINE,
-                        fine_amount=amount,
-                        raw_text=fine.group(0),
-                    )
-                )
 
-        probation = _PROBATION_RE.search(text)
-        if probation:
-            defendant.probation = Probation(
-                applied=_fv(True, paragraph, "body_probation@v1"),
-            )
+def _attach_fine(crime: Crime, tail: str, paragraph: ProseParagraph) -> None:
+    """把本罪之后、下一罪之前的罚金挂到本罪上。"""
+    match = _FINE_RE.search(tail)
+    if match is None:
         return
+    amount = _money(match.group(1), bool(match.group(2)))
+    if amount is None:
+        return
+    crime.additional.append(
+        AdditionalPunishment(type=AdditionalType.FINE, fine_amount=amount, raw_text=match.group(0))
+    )
+
+
+def _attach_probation(defendant: Defendant, tail: str, paragraph: ProseParagraph) -> None:
+    """缓刑考验期。只在「判处…」之后找，避免把「撤销缓刑三年」当成宣告缓刑。"""
+    if defendant.probation.applied.value:
+        return
+    match = _PROBATION_RE.search(tail)
+    if match is None:
+        return
+    defendant.probation.applied = _fv(True, paragraph, "body_probation@v1")
+    try:
+        months = cn_number_to_int(match.group(1).rstrip("年")) * 12
+    except TermParseError:
+        return
+    defendant.probation.months = _fv(months, paragraph, "body_probation@v1")
+
+
+def _verdict_text(text: str) -> str:
+    """取段落里属于判决主文的那部分。
+
+    「本院认为……依照……之规定，判决如下：」在真实文书里常常是**同一个自然段**，
+    清洗层按段落切分不会把它拆开，于是 ``anchors.body`` 的第一段里混着整段说理。
+
+    说理段不能参与形态判定，理由具体到案子：
+
+        （2014）梁刑初字第12号「本院认为」里写「被告人宿某建假释考验期限内犯新罪，
+        应当撤销假释……被告人张某祥在缓刑考验期限内犯新罪，应当撤销假释」——
+        两名被告人的情形在同一句里，而段落归属只能给其中一个人。按段归属，
+        另一个人就会拿到不属于他的「撤销缓刑」，本来该判第 71 条的被判成第 77 条。
+
+    说理里还会出现「不构成数罪并罚」这类反向表述，拿它当正向线索更危险。
+    所以形态判定只认「判决如下」之后的文字。
+    """
+    _, separator, tail = text.partition("判决如下")
+    return tail if separator else text
+
+
+def _is_revocation_paragraph(text: str) -> bool:
+    """是否为「撤销缓刑 / 撤销假释」的单列一项。
+
+    「撤销」与「缓刑/假释」同现即成立，理由同 :mod:`combination`——真实文书写
+    「缓刑宣告」「缓刑…的执行部分」「撤销假释裁定」，短语式匹配漏得比命中的多。
+
+    这类段落里也含「犯X罪，判处Y」，但那是**被撤销的前罪**，不是本案的定罪：
+
+        三、撤销山东省梁山县人民法院（2013）梁刑初字第65号刑事判决书对被告人
+            张某祥犯聚众斗殴罪，判处有期徒刑一年六个月缓刑二年的缓刑宣告。
+
+    若照常配对，本案罪名表会多出「聚众斗殴」一罪，并罚形态也会因为
+    罪名数变成 2 而被判成第 69 条，而正确答案是第 77 条撤销缓刑并罚。
+    """
+    return "撤销" in text and ("缓刑" in text or "假释" in text)
+
+
+def _apply_body(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
+    """在该被告人的主文段落里逐项配对「犯X罪，判处Y」，再单独取决定执行刑期。
+
+    三条取舍：
+
+    1. **一副刑期只挂一个罪。**「犯A罪、B罪，判处有期徒刑三年」这种一句判两罪
+       的写法，把同一份刑期挂到两个罪上等于编数据，宁可留空由人工补。
+    2. **「决定执行」优先。** 数罪并罚的每个罪各有一份刑期，执行通知书要的是
+       并罚后的那一份。先取「决定执行」，没有再退回第一项「判处」。
+    3. **罪名与刑期同句配对。** 只 search 第一个「判处」，遇到数罪并罚会把
+       第一个罪的刑期当作全案刑期。
+    """
+    if not defendant.name.is_present:
+        return
+
+    first: Optional[tuple[ParsedTerm, ProseParagraph]] = None
+    decision: Optional[tuple[ParsedTerm, ProseParagraph]] = None
+
+    for paragraph in block:
+        text = paragraph.text
+        # 撤销缓刑/假释那一项不是本案定罪，整段不参与配对与附加刑挂载。
+        # 该段的文本仍会进入 detect_combination（那里用的是整块合并文本）。
+        if _is_revocation_paragraph(text):
+            continue
+        matches = list(_PAIR_RE.finditer(text))
+
+        for position, match in enumerate(matches):
+            names = _charge_names(match.group(1))
+            if not names:
+                continue
+            try:
+                parsed: Optional[ParsedTerm] = parse_term(match.group(2))
+            except TermParseError:
+                # 刑期文本异常时仍保留罪名，刑期留空由人工补——不能因为一句话
+                # 解析失败就丢掉整个罪名。
+                parsed = None
+
+            tail_end = matches[position + 1].start() if position + 1 < len(matches) else len(text)
+            tail = text[match.end() : tail_end]
+            single_term = len(names) == 1
+
+            for index, name in enumerate(names):
+                crime = Crime(raw_text=text)
+                crime.charge = _fv(name, paragraph, "body_charge@v1")
+                if parsed is not None and single_term:
+                    crime.principal_type = _fv(
+                        parsed.principal_type.value, paragraph, "body_principal@v1"
+                    )
+                    if parsed.months is not None:
+                        crime.term_months = _fv(parsed.months, paragraph, "body_term@v1")
+                if index == 0:
+                    _attach_fine(crime, tail, paragraph)
+                defendant.crimes.append(crime)
+
+            # 决定执行刑期缺位时的退路。一句里写两罪只判一份刑期
+            # （「犯A罪、B罪，判处有期徒刑四年」）时，这一份就是全案刑期——
+            # 但要挂到具体罪名上就是编数据，故只用于 merged，不给 crime。
+            if first is None and parsed is not None:
+                first = (parsed, paragraph)
+            _attach_probation(defendant, tail, paragraph)
+
+        for match in _DECISION_RE.finditer(text):
+            try:
+                parsed_decision = parse_term(match.group(1))
+            except TermParseError:
+                continue
+            decision = (parsed_decision, paragraph)
+
+    chosen = decision or first
+    if chosen is None:
+        return
+
+    parsed, paragraph = chosen
+    extractor = "body_decision@v1" if decision is not None else "body_term@v1"
+    defendant.merged_type = _fv(parsed.principal_type.value, paragraph, extractor)
+    if parsed.months is not None:
+        defendant.merged_months = _fv(parsed.months, paragraph, extractor)
+    defendant.merged_days = parsed.days
+
+
+def _reasoning_sentences(block: Sequence[ProseParagraph], name: str) -> str:
+    """从说理段里挑出**提到该被告人**的句子。
+
+    「本院认为」段常把几名被告人的情形写在同一段：「被告人宿某建假释考验期限内
+    犯新罪，应当撤销假释……被告人张某祥在缓刑考验期限内犯新罪，应当撤销假释」。
+    整段拿去做形态判据，段落归属只能给一个人，另一个必然被套上别人的情形。
+    按句切、按姓名筛，各人只拿自己那一句。
+    """
+    if not name:
+        return ""
+    collected: list[str] = []
+    for paragraph in block:
+        before, separator, _ = paragraph.text.partition("判决如下")
+        if not separator:
+            continue
+        for sentence in re.split(r"[。；]", before):
+            if name in sentence:
+                collected.append(sentence)
+    return "。".join(collected)
 
 
 def extract_defendants(
@@ -332,9 +548,21 @@ def extract_defendants(
 
     defendants: list[Defendant] = []
     for seq, block in enumerate(split_blocks(paragraphs, anchors.head), start=1):
-        defendant = _parse_identity(block, seq)
-        _apply_body(defendant, paragraphs[anchors.body])
-        defendants.append(defendant)
+        defendants.append(_parse_identity(block, seq))
+
+    # 先按主文把段落分给各人，再逐人处理：数罪并罚的续段没有姓名，
+    # 逐人全文搜索会把同一段「决定执行」按顺序只给第一个人。
+    body = index_body(paragraphs[anchors.body], defendants)
+    for defendant in defendants:
+        block = body.get(defendant.seq, [])
+        _apply_body(defendant, block)
+        defendant.combination = detect_combination(
+            "".join(_verdict_text(paragraph.text) for paragraph in block),
+            len(defendant.crimes),
+            reasoning=_reasoning_sentences(
+                block, str(defendant.name.value) if defendant.name.is_present else ""
+            ),
+        )
     return defendants
 
 
@@ -343,4 +571,4 @@ def attach_to_case(case: Case, defendants: Sequence[Defendant]) -> None:
     case.defendants = list(defendants)
 
 
-__all__ = ["attach_to_case", "extract_defendants", "split_blocks"]
+__all__ = ["attach_to_case", "extract_defendants", "index_body", "split_blocks"]

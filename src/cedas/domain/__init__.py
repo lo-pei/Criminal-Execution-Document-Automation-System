@@ -5,6 +5,7 @@
 
 from .enums import (
     AdditionalType,
+    CombinationKind,
     Consistency,
     CustodyType,
     FieldStatus,
@@ -32,6 +33,7 @@ __all__ = [
     "AdditionalPunishment",
     "AdditionalType",
     "Case",
+    "CombinationKind",
     "Consistency",
     "Crime",
     "CustodySegment",

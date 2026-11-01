@@ -141,6 +141,7 @@ def _defendant_to_dict(defendant: Defendant) -> dict[str, Any]:
         "merged_type": _field_to_dict(defendant.merged_type),
         "merged_months": _field_to_dict(defendant.merged_months),
         "is_combined": defendant.is_combined,
+        "combination": defendant.combination.value,
         "probation": {
             "applied": _field_to_dict(defendant.probation.applied),
             "months": _field_to_dict(defendant.probation.months),
@@ -229,6 +230,18 @@ def extract(
     result.warnings.extend(extract_case_info(result.case, paragraphs, result.anchors))
     attach_to_case(result.case, result.defendants)
     _attach_spans(result.defendants)
+
+    # 单位犯罪：对「被告单位」只能判罚金，没有刑期，也就没有执行通知书。
+    # 这类判决不会被当成「缺字段」报错，反而容易让人以为漏抽了一个被告人。
+    if any("被告单位" in paragraph.text for paragraph in paragraphs[anchors.head]):
+        result.warnings.append(
+            ExtractionWarning(
+                code="A006",
+                message="本案含被告单位：单位部分不生成执行通知书，请核对被告人范围",
+                field="defendants",
+            )
+        )
+
     if not result.defendants:
         result.warnings.append(
             ExtractionWarning(

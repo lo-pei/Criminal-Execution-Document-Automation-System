@@ -10,6 +10,7 @@
     py -3.12 tools/ui_screenshot.py blocked   # 人为抹掉身份证号，看「待补充」
     py -3.12 tools/ui_screenshot.py locate    # 点字段后原文展开与高亮
     py -3.12 tools/ui_screenshot.py rename    # 文件名不规范时状态栏的「文件名待规范」
+    py -3.12 tools/ui_screenshot.py combined  # 数罪并罚：决定执行刑期与「并罚方式」
 
 输出到 ``build/ui-<stage>.png``。需要 Pillow；``build/`` 已被 gitignore。
 截图前把进程设为 DPI 感知并把 tk scaling 固定为 96dpi，否则 125% 缩放的机器上
@@ -70,6 +71,23 @@ def _input(stage: str) -> Path:
     ``rename`` 阶段用一份**内容相同、名字不规范**的副本：真实场景里判决书就是
     「微信图片_20230510103045.pdf」这种名字，用它才看得出状态栏的入口对不对。
     """
+    if stage == "combined":
+        # 数罪并罚样本：一份判决里两个罪，「刑期」显示的是决定执行刑期，
+        # 「并罚方式」显示「数罪并罚」——这两处在普通案件里是看不出来的。
+        #
+        # 用真实判决（史某伟：盗窃 + 危险驾驶，决定执行有期徒刑六个月）。
+        # 不再用自编样本演示：`examples/` 现在只留合成基线，多罪结构全部由
+        # `data/samples/` 的真实判决承担。该目录不入库（SECURITY.md），
+        # 新克隆的仓库里没有它——此时明确报错，不要静默回落到基线，
+        # 否则截出来的图里没有「数罪并罚」，看图的人会以为功能没做。
+        real = Path("data/samples/S001__冀0131刑初371号.txt")
+        if not real.exists():
+            raise SystemExit(
+                f"缺少 {real}。该目录不入库，需先按 data/samples/README.md 采集真实样本；"
+                "此阶段不能用合成基线替代。"
+            )
+        return real
+
     source = Path("examples/S000__京0105刑初123号.txt")
     if stage != "rename":
         return source
@@ -95,6 +113,10 @@ def main() -> None:
 
     if stage != "empty":
         window._load(_input(stage))
+    if stage == "combined":
+        # 数罪并罚样本的字段多出「并罚方式」一行，默认 690 高会把「量刑与刑期」
+        # 压到折线以下；这一张图是给人核对字段排布的，拉高到能一屏看全。
+        window.root.geometry("1000x1000")
     if stage == "locate":
         rows = review.build_fields(
             window._document,

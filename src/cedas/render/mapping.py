@@ -129,9 +129,22 @@ def _to_text(value: Any) -> str:
     return str(value)
 
 
+def _charges_text(defendant: Defendant) -> str:
+    """全部罪名，顿号连接，**不带**末尾的「罪」字。
+
+    模板写的是「因犯{{罪名}}罪」，所以这里只给「盗窃、诈骗、抢劫」。
+    只取第一个罪名会让数罪并罚的执行通知书写成「因犯盗窃罪」，
+    少掉的两个罪恰好是刑期更长的那两个——文书送到看守所就是错的。
+    """
+    names = [str(crime.charge.value) for crime in defendant.crimes if crime.charge.is_present]
+    return "、".join(name[:-1] if name.endswith("罪") else name for name in names)
+
+
 # 派生字段：模板里需要「三年六个月」而不是「42」
 _DERIVED: dict[str, Callable[[Case, Defendant], Any]] = {
     "defendant.merged_term_cn": lambda case, d: months_to_chinese(_unwrap(d.merged_months)),
+    # 占位符「罪名」用它，而不是 ``defendant.crimes.0.charge``——后者只给出第一个罪。
+    "defendant.charges_text": lambda case, d: _charges_text(d),
     "defendant.span_start": lambda case, d: d.span.start,
     "defendant.span_end": lambda case, d: d.span.end,
     "defendant.release_date": lambda case, d: d.span.release_date,
