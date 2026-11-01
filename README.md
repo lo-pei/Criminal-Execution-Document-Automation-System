@@ -222,9 +222,11 @@ python tools\build_offline.py
 - 文件命名：`{样本编号}__{案号}.txt`，如 `S001__京0105刑初123号.txt`。样本编号与真值表一一对应。
 - 无页码信息 ⇒ 溯源字段 `page` 为 `None`，复核界面显示「段落 N」。PDF 通道接入后自动填充页码。
 
-`examples/` 下有一份**合成样本**（非真实案件），用于跑通命令与单元测试；真实样本放 `data/samples/`，不随仓库分发。合成样本同时提供 `.txt` 与 `.pdf` 两份：PDF 由 `tools/make_sample_pdf.py` 从同一份 TXT 排版生成（A4、页眉、页码、大字号标题、按行宽折行），用来断言"同一份文书走两条通道，清洗结果逐段相同"。
+`data/samples/` 下是 **12 份真实生效判决全文**，用于规则回归（`tests/test_samples.py`，58 项断言）。该目录不入库（见 `SECURITY.md`），新克隆的仓库里只有一份 `README.md` 说明来源与边界，样本用例会 skip 而不是 fail。
 
-> 采样本阶段务必跑 `python tools/sample_lint.py data/samples`：它会重点识别"被手工整理过"的样本。整理过的样本会让清洗规则假通过，这个坑必须在这一步堵住。
+`examples/` 下只保留一份**合成基线** `S000`（非真实案件），用于跑通命令、界面演示与 TXT/PDF 双通道回归。它同时提供 `.txt` 与 `.pdf` 两份：PDF 由 `tools/make_sample_pdf.py` 从同一份 TXT 排版生成（A4、页眉、页码、大字号标题、按行宽折行），用来断言"同一份文书走两条通道，清洗结果逐段相同"。真实判决是数据库导出的已分段文本，没有软换行与页眉页码，测不到清洗层，所以这份基线不能删。
+
+> 采集样本后务必跑 `python tools/sample_lint.py data/samples`：它会重点识别"被手工整理过"的样本。整理过的样本会让清洗规则假通过，这个坑必须在这一步堵住。来源不同判据不同——数据库导出用默认 `--source db`，PDF 全选复制用 `--source pdf`。
 
 完整规范见 [`docs/04-样本格式与标注规范.md`](docs/04-样本格式与标注规范.md)。
 
@@ -262,7 +264,9 @@ python tools\build_offline.py
 ```bash
 python -m pytest -q                      # 206 项单元测试
 python -m ruff check src tests tools packaging   # 静态检查，零告警
-python tools/sample_lint.py data/samples # 样本体检（识别被手工整理过的样本）
+python tools/sample_lint.py data/samples # 样本体检（数据库导出，默认 --source db）
+python tools/sample_lint.py examples --source pdf --min-chars 300  # 合成基线：查版式，不查字数
+python tools/sample_report.py data/samples        # 批量抽取摘要，采集后逐份回原文核对
 python tools/build_offline.py --check-only       # 构建环境闸门
 ```
 
@@ -322,7 +326,7 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 | [`00-字段字典-spec-v0.1.md`](docs/00-字段字典-spec-v0.1.md) | 四组字段定义、数据结构、校验规则 | 草案，待业务确认 |
 | [`01-需求与可行性评估.md`](docs/01-需求与可行性评估.md) | 原始需求 + 审计结论 + 已修正缺陷 | 已定稿 |
 | [`02-系统架构.md`](docs/02-系统架构.md) | 分层、数据流、接口契约、路径模型 | 已定稿 |
-| [`03-决策记录-ADR.md`](docs/03-决策记录-ADR.md) | 关键技术决策与理由（ADR-001 ~ 015） | 持续追加 |
+| [`03-决策记录-ADR.md`](docs/03-决策记录-ADR.md) | 关键技术决策与理由（ADR-001 ~ 016） | 持续追加 |
 | [`04-样本格式与标注规范.md`](docs/04-样本格式与标注规范.md) | 样本采集与真值填写规则 | 已定稿 |
 | [`05-开发与交接手册.md`](docs/05-开发与交接手册.md) | **接手必读**：当前状态、下一步、踩过的坑 | 持续更新 |
 | [`06-路线图与验收标准.md`](docs/06-路线图与验收标准.md) | 垂直切片定义与量化验收 | 已定稿 |
@@ -331,6 +335,7 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 | [`09-端到端渲染与归档.md`](docs/09-端到端渲染与归档.md) | 一条链路：阻断码、起算日来源、归档版本、合成模板 | 已定稿 |
 | [`10-界面设计.md`](docs/10-界面设计.md) | 界面取舍、用词表、与 pipeline 的三处接口、已知限制 | 已定稿 |
 | [`11-文件命名规范.md`](docs/11-文件命名规范.md) | 源文件与输出文书的命名规则、改名边界、缺项处理 | 已定稿 |
+| [`12-样本族与覆盖场景.md`](docs/12-样本族与覆盖场景.md) | 12 份真实判决各覆盖什么、四种并罚形态、真实缺陷记录、未覆盖情形清单 | 已定稿 |
 | [`journal/`](docs/journal/) | 每次工作会话的过程记录 | 追加式 |
 
 ---
