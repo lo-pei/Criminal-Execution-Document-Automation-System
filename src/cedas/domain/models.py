@@ -197,6 +197,15 @@ class Defendant:
     # 整体作出的判定，指到某一段反而是假溯源。它决定起算日怎么来。
     combination: CombinationKind = CombinationKind.NONE
     probation: Probation = field(default_factory=Probation)
+    # 免予刑事处罚 / 宣告无罪。这两种结论没有主刑、没有刑期，本就不出执行通知书。
+    # 单独立一个字段而不是靠「主刑为空」推断：主刑为空更多意味着抽漏了，
+    # 两者在报告上的处置完全不同——一个是结论、一个是缺陷。
+    exempt: FieldValue = field(default_factory=blank)
+    # 本判决主文没有对该被告人作出判项。再审「维持原判」、二审只改其中一人时，
+    # 判决书首部照样列全部当事人，主文却只写改了的那一个。
+    # 同样单独立字段：主文里没有他的判项，与「抽漏了」在报告上是两件事，
+    # 后者要去修规则，前者本来就出不了执行通知书。
+    verdict_absent: FieldValue = field(default_factory=blank)
     recovery: FieldValue = field(default_factory=blank)
     civil_compensation: FieldValue = field(default_factory=blank)
 

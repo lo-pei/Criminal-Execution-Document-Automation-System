@@ -27,7 +27,13 @@ from dataclasses import replace
 from datetime import date
 from typing import Optional
 
-from ..calc.term_parser import ParsedTerm, TermParseError, cn_number_to_int, parse_term
+from ..calc.term_parser import (
+    ParsedTerm,
+    TermParseError,
+    cn_number_to_int,
+    parse_duration_months,
+    parse_term,
+)
 from ..domain.enums import AdditionalType, CustodyType
 from ..domain.models import (
     AdditionalPunishment,
@@ -39,7 +45,7 @@ from ..domain.models import (
     ProseParagraph,
 )
 from .anchors import Anchors, text_before_end_marker
-from .combination import detect_combination
+from .combination import detect_combination, revokes_probation
 
 # --- 首部：身份信息 --------------------------------------------------------
 # 「被告人张三，男，1985年3月2日出生……」——姓名后紧跟标点是最稳的判据，
@@ -48,7 +54,7 @@ from .combination import detect_combination
 # 句号也算：简易程序或被告人身份信息不全的判决书写「被告人颜某。曾因犯盗窃罪……」
 # （见（2014）甬余刑初字第633号），姓名后直接断句，只认逗号会让整份文书的
 # 被告人一个都认不出，连带主文归属全部落空。
-_NAME_RE = re.compile(r"^被告人([\u4e00-\u9fa5]{1,4})[，,。]")
+_NAME_RE = re.compile(r"^(?:原审)?被告人([\u4e00-\u9fa5]{1,4})[，,。]")
 _GENDER_RE = re.compile(r"[，,](男|女)[，,]")
 _BIRTH_RE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日出生")
 _ID_RE = re.compile(r"公民身份号码\s*([0-9]{17}[0-9Xx])")
@@ -91,7 +97,14 @@ _DECISION_RE = re.compile(r"决定执行([^，,。；]+)")
 _SENTENCE_RE = re.compile(r"判处([^，,。；]+)")
 # 罚金数额中文、阿拉伯混用：「五千元」「10 万元」「人民币5000元」
 _FINE_RE = re.compile(r"并处罚金(?:人民币)?([\d.]+|[一二三四五六七八九十百千]+)(万)?元")
-_PROBATION_RE = re.compile(r"缓刑([\u4e00-\u9fa5\d]{1,6}年)")
+_PROBATION_RE = re.compile(r"缓刑([^，,。；;、）)]{1,12})")
+# 免予/免除刑事处罚。判项里的固定用语，说理段里出现的是「可免予」这类主张，
+# 因此额外要求同段出现本人姓名（见 _apply_exemption）。
+_EXEMPT_RE = re.compile(r"(?:免予|免除)刑事处罚")
+# 无罪判项：「被告人X无罪」「被告人X犯盗窃罪，无罪」。
+_INNOCENT_RE = re.compile(r"无罪\s*[。；;]?\s*$")
+# 免刑判项里的罪名：「被告人X犯盗窃罪，免予刑事处罚」。
+_CHARGE_ONLY_RE = re.compile(r"犯([^，,。；;]{1,40}?罪)")
 # 主文里「被告人」后紧跟的姓名不再用正则取，改为与已知姓名直接比对
 # （见 ``index_body``）。分项编号前缀，判续段前要先剥掉。
 _SECTION_PREFIX_RE = re.compile(r"^[（(]?[一二三四五六七八九十]{1,3}[）)、．.]\s*")
@@ -110,8 +123,13 @@ _CUSTODY_TYPES = {
 # --- C 组：判决书载明的刑期起止日 ------------------------------------------
 # 真实文书写「即自2024年9月19日起至2025年3月18日止」，也写「即从2013年9月28日
 # 起至2024年9月27日止」；「即」可省，「自」「从」两用，日期与「起」之间不空格。
+_SPAN_YEAR = r"(?:\d{4}|[零〇○OoＯ一二三四五六七八九]{4})"
+_SPAN_MONTH_DAY = r"(?:\d{1,2}|[零〇○OoＯ一二三四五六七八九十]{1,3})"
 _SPAN_RE = re.compile(
-    r"(?:即)?(?:自|从)(\d{4})年(\d{1,2})月(\d{1,2})日起\s*至(\d{4})年(\d{1,2})月(\d{1,2})日止"
+    rf"(?:即)?(?:自|从)({_SPAN_YEAR})年({_SPAN_MONTH_DAY})月({_SPAN_MONTH_DAY})日"
+    # 「止」可有可无：（2014）台椒刑初字第570号写「即自二O一四年三月三日起至
+    # 二O一八年三月二日。」——没有「止」字，硬性要求就整条抽不到。
+    rf"起\s*至({_SPAN_YEAR})年({_SPAN_MONTH_DAY})月({_SPAN_MONTH_DAY})日\s*止?"
 )
 # 同一份判决书里「自…起至…止」至少还有两种别的意思，都长得一模一样：
 #
@@ -166,11 +184,57 @@ def _search(
     return None, None
 
 
+_CN_ZERO = str.maketrans({"〇": "0", "○": "0", "O": "0", "o": "0", "Ｏ": "0", "零": "0"})
+_CN_DIGIT_CHARS = {
+    "一": "1",
+    "二": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "七": "7",
+    "八": "8",
+    "九": "9",
+}
+
+
+def _year_value(text: str) -> Optional[int]:
+    """年份转整数。支持「2014」与「二〇一四」「二O一四」三种写法。
+
+    年份必须**逐位**读：「二〇一四」逐位是 2/0/1/4，按位值读会得到 4。
+    月、日则相反，要按位值读（「二十九日」是 29 不是 2 和 9），两者不能共用一个函数。
+
+    真实文书里「零」常被写成拉丁字母 O 或圈号：「二O一四年三月三日」
+    （（2014）台椒刑初字第570号）。不认这一种，该案的载明起止日一个都抽不到。
+    """
+    text = text.strip()
+    if text.isdigit():
+        return int(text)
+    normalized = "".join(_CN_DIGIT_CHARS.get(ch, ch) for ch in text.translate(_CN_ZERO))
+    return int(normalized) if len(normalized) == 4 and normalized.isdigit() else None
+
+
+def _month_day_value(text: str) -> Optional[int]:
+    """月、日转整数。「十二」「二十九」要按位值读。"""
+    text = text.strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        return cn_number_to_int(text.translate(_CN_ZERO))
+    except TermParseError:
+        return None
+
+
 def _to_date(text: Optional[str], month: str, day: str) -> Optional[date]:
     if text is None:
         return None
+    year = _year_value(text)
+    month_value = _month_day_value(month)
+    day_value = _month_day_value(day)
+    if year is None or month_value is None or day_value is None:
+        return None
     try:
-        return date(int(text), int(month), int(day))
+        return date(year, month_value, day_value)
     except ValueError:  # 如 2 月 30 日，说明文本有问题，宁可留空
         return None
 
@@ -431,7 +495,7 @@ def _attach_probation(defendant: Defendant, tail: str, paragraph: ProseParagraph
         return
     defendant.probation.applied = _fv(True, paragraph, "body_probation@v1")
     try:
-        months = cn_number_to_int(match.group(1).rstrip("年")) * 12
+        months = parse_duration_months(match.group(1))
     except TermParseError:
         return
     defendant.probation.months = _fv(months, paragraph, "body_probation@v1")
@@ -460,8 +524,10 @@ def _verdict_text(text: str) -> str:
 def _is_revocation_paragraph(text: str) -> bool:
     """是否为「撤销缓刑 / 撤销假释」的单列一项。
 
-    「撤销」与「缓刑/假释」同现即成立，理由同 :mod:`combination`——真实文书写
-    「缓刑宣告」「缓刑…的执行部分」「撤销假释裁定」，短语式匹配漏得比命中的多。
+    判据交给 :func:`cedas.extract.combination.revokes_probation`，与本模块外的
+    形态判定共用一份实现。这里**不再自己写一份**「撤销与缓刑同现」——两处各自
+    演化，会出现形态判定说不是撤销缓刑、罪名抽取说这一项是撤销缓刑的报告，
+    而这种自相矛盾只有对着原文逐字看才发现。
 
     这类段落里也含「犯X罪，判处Y」，但那是**被撤销的前罪**，不是本案的定罪：
 
@@ -470,8 +536,65 @@ def _is_revocation_paragraph(text: str) -> bool:
 
     若照常配对，本案罪名表会多出「聚众斗殴」一罪，并罚形态也会因为
     罪名数变成 2 而被判成第 69 条，而正确答案是第 77 条撤销缓刑并罚。
+
+    反过来，「撤销……刑事判决中第二项，即……判处有期徒刑六个月，缓刑六个月」
+    撤的是原判项，缓刑六个月是那一项的内容，不算撤销缓刑段——它的实刑与缓刑
+    都要照常参与配对，否则再审改判的判决会抽不到本案刑期。
     """
-    return "撤销" in text and ("缓刑" in text or "假释" in text)
+    return revokes_probation(text)
+
+
+def _apply_exemption(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
+    """认「免予刑事处罚」「宣告无罪」这两类没有刑期的结论。
+
+    只看判项段，且姓名必须同段出现。理由：说理段里「辩护人建议宣告张某无罪」
+    「被告人系从犯，可免予刑事处罚」都是**主张**，不是结论；把它们当结论，
+    会把一份该出文书的判决判成不出文书，而且不报错。
+
+    判项段的形状是固定的：``二、原审被告人纪某犯盗窃罪，免予刑事处罚。``
+    因此要求「姓名 + 罪名 + 免予刑事处罚」同段，或「姓名 + 无罪」结尾。
+    """
+    if not defendant.name.is_present or defendant.exempt.is_present:
+        return
+    name = str(defendant.name.value)
+    for paragraph in block:
+        text = paragraph.text
+        if name not in text:
+            continue
+        # 「撤销…」那类段落里也可能出现姓名与「免予」，但它撤的是前案
+        if _is_revocation_paragraph(text):
+            continue
+        if _EXEMPT_RE.search(text) or _INNOCENT_RE.search(text):
+            defendant.exempt = _fv(True, paragraph, "body_exempt@v1")
+            return
+
+
+def _attach_charges_without_term(
+    defendant: Defendant, block: Sequence[ProseParagraph]
+) -> None:
+    """从「被告人X犯A罪，免予刑事处罚」里只取罪名。
+
+    只在同段同时出现本人姓名与免刑/无罪结论时执行。这个限制不能放宽：
+    说理段几乎每段都有「被告人X犯A罪」的复述，无差别地抽会把说理里的罪名
+    当成判项，而判项与说理的罪名不一致恰恰是再审案件最常见的争点。
+    """
+    if defendant.crimes or not defendant.name.is_present:
+        return
+    name = str(defendant.name.value)
+    for paragraph in block:
+        text = paragraph.text
+        if name not in text or _is_revocation_paragraph(text):
+            continue
+        if not (_EXEMPT_RE.search(text) or _INNOCENT_RE.search(text)):
+            continue
+        found = _CHARGE_ONLY_RE.search(text)
+        if found is None:
+            continue
+        for charge in _charge_names(found.group(1)):
+            crime = Crime(raw_text=text)
+            crime.charge = _fv(charge, paragraph, "body_charge@v1")
+            defendant.crimes.append(crime)
+        return
 
 
 def _apply_body(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
@@ -544,6 +667,10 @@ def _apply_body(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
 
     chosen = decision or first
     if chosen is None:
+        # 免刑与无罪判项不写「判处」，配对正则整条落空，但罪名仍要抽：
+        #   「二、原审被告人纪某犯盗窃罪，免予刑事处罚。」
+        # 不抽的话报告上就是「缺罪名」，而原文其实写得很清楚。
+        _attach_charges_without_term(defendant, block)
         return
 
     parsed, paragraph = chosen
@@ -582,6 +709,46 @@ def _apply_text_span(defendant: Defendant, block: Sequence[ProseParagraph]) -> N
             return
 
 
+_REASONING_MARKERS = (
+    "本院认为",
+    "本院再审认为",
+    "本院二审认为",
+    "本院经审理认为",
+    "本院再审审理认为",
+)
+
+
+def _reasoning_paragraphs(
+    paragraphs: Sequence[ProseParagraph], anchors: Optional[Anchors]
+) -> list[ProseParagraph]:
+    """取说理段：最后一个「本院认为」起，到主文锚点之前。
+
+    **不能只看主文区间。** 「本院认为……判决如下：」在有些文书里是一个自然段，
+    在另一些里是两个独立段——（2017）苏08刑再2号就是独立段。只从主文区间里找，
+    说理段落在首部一侧，永远取不到，``detect_combination`` 的说理兜底就此失效，
+    形态一路回落到第 69 条。
+
+    起点取**最后一个**「本院认为」，不取第一个：再审与二审会在引述部分写
+    「原审法院认为」「本院一审认为」，从第一个起算，原审的说理也会被当成本案的。
+    找不到就不给——宁可不兜底，也不能把首部的前科复述当说理。
+
+    末端含主文锚点那一段。说理与「判决如下」同一个自然段时，这一段既是说理又
+    是主文起点，排掉它等于把兜底断掉；（2014）甬余刑初字第633号一类文书全是
+    这种合段写法，漏掉的正是最需要兜底的那一批。段内由「判决如下」切开，
+    判项部分在 :func:`_reasoning_sentences` 里已经被截掉。
+    """
+    if anchors is None:
+        return []
+    limit = min(anchors.body.start + 1, len(paragraphs))
+    start: Optional[int] = None
+    for index in range(limit):
+        if any(marker in paragraphs[index].text for marker in _REASONING_MARKERS):
+            start = index
+    if start is None:
+        return []
+    return list(paragraphs[start:limit])
+
+
 def _reasoning_sentences(block: Sequence[ProseParagraph], name: str) -> str:
     """从说理段里挑出**提到该被告人**的句子。
 
@@ -589,18 +756,46 @@ def _reasoning_sentences(block: Sequence[ProseParagraph], name: str) -> str:
     犯新罪，应当撤销假释……被告人张某祥在缓刑考验期限内犯新罪，应当撤销假释」。
     整段拿去做形态判据，段落归属只能给一个人，另一个必然被套上别人的情形。
     按句切、按姓名筛，各人只拿自己那一句。
+
+    ``block`` 里可能混着「依照……之规定，判决如下：」那一段，它前面的内容属判决
+    理由，照常参与筛选；这一段之后才是判项，不能算说理。
     """
     if not name:
         return ""
     collected: list[str] = []
     for paragraph in block:
-        before, separator, _ = paragraph.text.partition("判决如下")
-        if not separator:
-            continue
+        before = paragraph.text.partition("判决如下")[0]
         for sentence in re.split(r"[。；]", before):
             if name in sentence:
                 collected.append(sentence)
     return "。".join(collected)
+
+
+def _mark_absent_verdicts(
+    defendants: Sequence[Defendant],
+    body: Sequence[ProseParagraph],
+) -> None:
+    """标出主文里根本没被提到的被告人。
+
+    再审「维持原判」、二审只改其中一人时，首部照列全部当事人，主文却只对改了
+    的那个作出判项。（2017）苏08刑再2号的孙某富即如此：主文三项全在说彭某球，
+    对他只有一句「维持……第二、三项」，没有一个「判处」。
+
+    不给这个标记，报告上会连报「罪名缺失」「主刑未识别」「无起算日」——看起来
+    像抽取坏了。承办人照着这三条去原文找，找不到，最后会手填一个不存在的新刑期，
+    而对这个人的正确处置恰恰是**不出执行通知书**（原判没被撤销，仍按原判执行）。
+
+    判据是「主文里一次都没出现这个名字」，不是「分到的段落为空」：段落归属可能
+    因为同姓、指代写法把段落分错，而「整篇主文没提过这个人」是事实层面的。
+    """
+    texts = [paragraph.text for paragraph in body]
+    for defendant in defendants:
+        if not defendant.name.is_present:
+            continue
+        name = str(defendant.name.value)
+        if any(name in text for text in texts):
+            continue
+        defendant.verdict_absent = _fv(True, body[0] if body else None, "body_absent@v1")
 
 
 def extract_defendants(
@@ -618,17 +813,20 @@ def extract_defendants(
     # 先按主文把段落分给各人，再逐人处理：数罪并罚的续段没有姓名，
     # 逐人全文搜索会把同一段「决定执行」按顺序只给第一个人。
     body = index_body(paragraphs[anchors.body], defendants)
+    reasoning = _reasoning_paragraphs(paragraphs, anchors)
     for defendant in defendants:
         block = body.get(defendant.seq, [])
         _apply_body(defendant, block)
+        _apply_exemption(defendant, block)
         _apply_text_span(defendant, block)
         defendant.combination = detect_combination(
             "".join(_verdict_text(paragraph.text) for paragraph in block),
             len(defendant.crimes),
             reasoning=_reasoning_sentences(
-                block, str(defendant.name.value) if defendant.name.is_present else ""
+                reasoning, str(defendant.name.value) if defendant.name.is_present else ""
             ),
         )
+    _mark_absent_verdicts(defendants, paragraphs[anchors.body])
     return defendants
 
 

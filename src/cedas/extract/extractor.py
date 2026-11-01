@@ -159,6 +159,8 @@ def _defendant_to_dict(defendant: Defendant) -> dict[str, Any]:
         "merged_months": _field_to_dict(defendant.merged_months),
         "is_combined": defendant.is_combined,
         "combination": defendant.combination.value,
+        "exempt": _field_to_dict(defendant.exempt),
+        "verdict_absent": _field_to_dict(defendant.verdict_absent),
         "probation": {
             "applied": _field_to_dict(defendant.probation.applied),
             "months": _field_to_dict(defendant.probation.months),

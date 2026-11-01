@@ -51,7 +51,7 @@ EXAMPLES = ROOT / "examples"
 # 与刑期计算有关的阻断码。身份信息缺失（E-ID / E-BIRTH / E-GENDER）不在此列：
 # 真实判决书公开版本本来就不载身份证号，那不是规则的问题，也不该拿它当断言。
 # 用它们当断言，等于要求样本造假。
-TERM_BLOCKERS = ("E-START", "E-END", "E-LIFE")
+TERM_BLOCKERS = ("E-START", "E-END", "E-LIFE", "E-EXEMPT", "E-NO-VERDICT")
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,11 @@ class Person:
     # 判决书正文载明的刑期起止日（「即自X日起至Y日止」）。未载明为 None——
     # 实测 53% 的主文不写起止日（见 docs/08），None 和日期一样是断言。
     declared: tuple[date, date] | None = None
+    # 免予刑事处罚 / 无罪：没有刑罚可执行，压根不该出执行通知书。
+    exempt: bool = False
+    # 本判决主文没有对他的判项（再审维持原判、二审只改其中一人）。
+    # 与「抽漏了」是两回事：原文本来就没有可以执行的刑罚。
+    verdict_absent: bool = False
 
 
 @dataclass(frozen=True)
@@ -202,6 +207,100 @@ SAMPLES: tuple[Sample, ...] = (
         people=(Person("朱某", ("故意伤害",), None, CombinationKind.DEDUCT_THEN_MERGE),),
         blocked=("E-LIFE",),
     ),
+    Sample(
+        # 单位犯罪、两个被告单位、三名责任人，虚开税款 24 万 + 349 万。
+        # 主文先列两个「被告单位…判处罚金」，再列三名自然人。单位不是自然人，
+        # 不生成执行通知书；但王某同时是两个单位直接负责的主管人员，
+        # 主文里只有**一个**判项（三），按单位拆人就会把他算成两个被告人。
+        file="S013__2023鲁0811刑初1080号.txt",
+        kind=CRIMINAL_JUDGMENT,
+        people=(
+            Person("王某", ("虚开增值税专用发票",), 36, probation_months=48),
+            # 「缓刑三年零六个月」= 42 个月。旧实现按正则取到「三年」就把
+            # 「零六个月」丢了，静默少算半年——不报错、不留空，值还是整数。
+            Person("林某霞", ("虚开增值税专用发票",), 36, probation_months=42),
+            Person("赵某军", ("虚开增值税专用发票",), 36, probation_months=36),
+        ),
+    ),
+    Sample(
+        # 再审改判 + 免予刑事处罚。主文只有两项：撤销原判与撤销缓刑裁定、免予刑事处罚。
+        # 全篇没有一处「判处」，配对正则整条落空——罪名也得单独抽得出来。
+        # 首部写「原审被告人纪某。」，姓名后直接句号，没有性别出生日期。
+        file="S014__2015金义刑再初字第1号.txt",
+        kind=CRIMINAL_JUDGMENT,
+        people=(Person("纪某", ("盗窃",), None, exempt=True),),
+        blocked=("E-EXEMPT",),
+    ),
+    Sample(
+        # 再审「维持一项、撤销一项、改判一项」。申某某同时有撤销项（缓刑六个月）
+        # 与改判项（缓刑一年），取错一个就把考验期从 12 个月变成 6 个月。
+        # 洪某某的判项写在「维持…即被告人洪某某犯故意伤害罪，判处…」里，
+        # 「维持」不是撤销，必须照常配对。
+        file="S015__2015延中刑再终字第9号.txt",
+        kind=CRIMINAL_JUDGMENT,
+        people=(
+            Person("洪某某", ("故意伤害",), 6, probation_months=6),
+            Person("申某某", ("故意伤害",), 6, probation_months=12),
+        ),
+    ),
+    Sample(
+        # 26 名被告人、27 个判项，缓刑与管制混排；首部只有「被告人X，农民。」
+        # 加一段强制措施，没有性别、出生日期、身份证号（公开版删了）。
+        # 陈某从的判项载明起止日写作「二O一四年三月三日」——拉丁字母 O 代零，
+        # 且结尾没有「止」字。两处任一不认，这条载明值就一个都抽不到。
+        file="S016__2014台椒刑初字第570号.txt",
+        kind=CRIMINAL_JUDGMENT,
+        people=(
+            Person("陈某从", ("开设赌场",), 48,
+                   declared=(date(2014, 3, 3), date(2018, 3, 2))),
+            Person("尹某丽", ("开设赌场",), 36, probation_months=60),
+            Person("张某利", ("开设赌场",), 36, probation_months=48),
+            Person("李某仙", ("开设赌场",), 36, probation_months=42),
+            Person("董某甲", ("开设赌场",), 18, probation_months=24),
+            Person("杨某甲", ("开设赌场",), 18, probation_months=24),
+            Person("李某甲", ("开设赌场",), 18, probation_months=24),
+            Person("金某", ("开设赌场",), 12, probation_months=18),
+            Person("葛某甲", ("开设赌场",), 10, probation_months=15),
+            Person("叶某", ("开设赌场",), 12, probation_months=18),
+            Person("杨某乙", ("开设赌场",), 12, probation_months=18),
+            Person("程某", ("开设赌场",), 11, probation_months=16),
+            Person("李某乙", ("开设赌场",), 11, probation_months=16),
+            Person("杨某丙", ("开设赌场",), 9, probation_months=14),
+            Person("陈某甲", ("开设赌场",), 10, probation_months=15),
+            Person("杨某丁", ("开设赌场",), 9, probation_months=14),
+            Person("李某丙", ("开设赌场",), 9, probation_months=14),
+            Person("陶某", ("开设赌场",), 9, probation_months=14),
+            Person("蒋某", ("开设赌场",), 8, probation_months=13),
+            Person("郭某", ("开设赌场",), 7, probation_months=12),
+            Person("李某丁", ("开设赌场",), 6, probation_months=12),
+            Person("董某乙", ("开设赌场",), 6, probation_months=12),
+            Person("李某戊", ("开设赌场",), 12),
+            Person("陈某乙", ("开设赌场",), 10),
+            Person("王某", ("开设赌场",), 9),
+            Person("葛某乙", ("开设赌场",), 9),
+        ),
+        # 管制四人没有缓刑、也没有载明起止日，起算日取判决生效日；
+        # 缓刑二十二人同样要靠生效日期。
+        blocked=(),
+    ),
+    Sample(
+        # 再审改判：主文分「维持一项／撤销一项／改判一项」，改判后执行**无期徒刑**，
+        # 剥夺政治权利终身。三处结构与以往样本都不同：
+        #   1. 说理「本院认为」是独立一段，不在「判决如下」那一段里——
+        #      说理兜底因此永远取不到，形态一路回落到第 69 条（本案是第 70 条漏罪）；
+        #   2. 孙某富在首部有完整身份信息，主文却没有他的判项（只「维持…第二、三项」），
+        #      旧实现报「罪名缺失／主刑未识别／无起算日」，像是抽漏了；
+        #   3. 文末「附：相关法律条文」把刑法第六十九条全文抄进来，里面还有
+        #      「判处无期徒刑」字样，落款区里埋着一段像判项的文字。
+        file="S017__2017苏08刑再2号.txt",
+        kind=CRIMINAL_JUDGMENT,
+        people=(
+            # 前罪无期、本罪拘役三个月，并罚后仍是无期。没有刑期起止，不出通知书。
+            Person("彭某球", ("盗窃",), None, combination=CombinationKind.MERGE_THEN_DEDUCT),
+            Person("孙某富", (), None, verdict_absent=True),
+        ),
+        blocked=("E-LIFE", "E-NO-VERDICT"),
+    ),
 )
 
 
@@ -245,6 +344,12 @@ def test_defendants(sample: Sample):
         assert defendant.declared_span == (
             expected.declared if expected.declared else (None, None)
         ), f"{expected.name} 的载明起止日不对"
+        assert defendant.exempt.is_present == expected.exempt, (
+            f"{expected.name} 的免刑/无罪结论识别不对"
+        )
+        assert defendant.verdict_absent.is_present == expected.verdict_absent, (
+            f"{expected.name} 的「主文无判项」结论识别不对"
+        )
 
 
 @pytest.mark.parametrize("sample", SAMPLES, ids=lambda s: s.file[:4])
@@ -511,6 +616,16 @@ def test_year_is_inherited_from_non_measure_date():
          1, CombinationKind.REVOKE_PROBATION),
         ("撤销……刑事判决书对被告人张某祥犯聚众斗殴罪，判处有期徒刑一年六个月"
          "缓刑二年的缓刑宣告。", 1, CombinationKind.REVOKE_PROBATION),
+        # 再审撤销原判项：撤的是「判决中第二项」，缓刑六个月只是那一项的内容。
+        # 「撤销」与「缓刑」同现就判第 77 条，会让每一起再审改判都被判成并罚，
+        # 起算日跟着被要求人工填写——判决书里根本没有这个日期可填。
+        ("二、撤销延吉市人民法院（2014）延刑初字第584号刑事判决中第二项，即被告人"
+         "申某某犯故意伤害罪，判处有期徒刑六个月，缓刑六个月。缓刑考验期从判决确定"
+         "之日起计算；三、原审被告人申某某犯故意伤害罪，判处有期徒刑六个月，缓刑一年。",
+         1, CombinationKind.NONE),
+        ("一、撤销本院（2014）金义刑初字第1624号刑事判决及（2014）金义刑执字第13号"
+         "刑事裁定。二、原审被告人纪某犯盗窃罪，免予刑事处罚。",
+         1, CombinationKind.NONE),
         # 撤销假释裁定书本身不含「假释」二字，靠「未执行」落第 71 条
         ("一、撤销山东省淄博市中级人民法院（2013）淄刑执字第841号刑事裁定书。"
          "二、被告人宿某建犯抢劫罪，判处有期徒刑十年六个月；与前罪未执行的刑罚并罚，"

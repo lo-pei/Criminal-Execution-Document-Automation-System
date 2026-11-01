@@ -89,6 +89,37 @@ def cn_number_to_int(text: str) -> int:
     return total + section
 
 
+def parse_duration_months(text: str) -> int:
+    """解析不带主刑关键词的期限，返回总月数。
+
+    判决书里的缓刑考验期、羁押折抵只写「三年零六个月」「六个月」，前面没有
+    「有期徒刑」三个字，:func:`parse_term` 用不了。
+
+    这个函数存在的直接原因是**一次静默少算**：（2023）鲁0811刑初1080号判
+    「有期徒刑三年，缓刑三年零六个月」，旧实现按 ``缓刑([\\u4e00-\\u9fa5\\d]{1,6}年)``
+    取到「三年」就把后面的「零六个月」丢了，考验期变成 36 个月——不报错、不留空，
+    是一个看起来完全正常的错值。
+
+    >>> parse_duration_months("三年零六个月")
+    42
+    >>> parse_duration_months("六个月")
+    6
+
+    Raises:
+        TermParseError: 找不到任何年月数字。
+    """
+    months = 0
+    year_match = _YEAR_PATTERN.search(text)
+    if year_match:
+        months += cn_number_to_int(year_match.group(1)) * 12
+    month_match = _MONTH_PATTERN.search(text)
+    if month_match:
+        months += cn_number_to_int(month_match.group(1))
+    if months == 0:
+        raise TermParseError(f"找不到期限数字：{text!r}")
+    return months
+
+
 def _cut_body(body: str) -> str:
     """截断到第一个终止符，剥掉附加刑与缓刑表述。"""
     cut = len(body)
@@ -148,4 +179,10 @@ def parse_term(text: str) -> ParsedTerm:
     return ParsedTerm(principal, years * 12 + months, raw, days=days)
 
 
-__all__ = ["ParsedTerm", "TermParseError", "cn_number_to_int", "parse_term"]
+__all__ = [
+    "ParsedTerm",
+    "TermParseError",
+    "cn_number_to_int",
+    "parse_duration_months",
+    "parse_term",
+]

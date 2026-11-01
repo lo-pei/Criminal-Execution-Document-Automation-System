@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from ..domain.enums import CombinationKind
@@ -42,7 +43,7 @@ MANUAL_START_KINDS: tuple[CombinationKind, ...] = (
     CombinationKind.REVOKE_PROBATION,
 )
 
-_REVOKE_CLUES = ("撤销缓刑", "撤销本院", "宣告缓刑")
+_REVOKE_CLUES = ("撤销缓刑", "宣告缓刑", "缓刑宣告")
 # 撤销缓刑 / 撤销假释在真实文书里的写法差异极大，枚举短语必然漏：
 #   「撤销本院（2022）京0105刑初111号刑事判决中对被告人…宣告缓刑…的执行部分」
 #   「撤销山东省梁山县人民法院（2013）梁刑初字第65号刑事判决书对被告人张某祥
@@ -55,6 +56,22 @@ _REVOKE_CLUES = ("撤销缓刑", "撤销本院", "宣告缓刑")
 # 那种案子的主文写「与前罪未执行的刑罚并罚」，本来就是按 71 条处理。
 _REVOKE_VERBS = ("撤销",)
 _REVOKE_OBJECTS = ("缓刑", "假释")
+# 但「撤销」与「缓刑」同现还不够——**撤销的宾语是什么**才决定它是不是第 77 条。
+#
+#   撤销本院……刑事判决中对被告人宣告缓刑三年的执行部分   ← 77 条，撤销缓刑本身
+#   撤销……判处有期徒刑一年六个月缓刑二年的缓刑宣告        ← 77 条，撤销缓刑本身
+#   撤销延吉市人民法院……刑事判决中第二项，即被告人申某某犯
+#     故意伤害罪，判处有期徒刑六个月，缓刑六个月          ← 再审撤销原判项
+#
+# 前两种撤销的是**缓刑这一执行方式**，「缓刑」是宾语中心词，后面不接期限
+# （「缓刑宣告」「缓刑…的执行部分」）；第三种撤销的是**判决中的某一项**，
+# 「缓刑六个月」只是被撤销那一项的内容——缓刑后面紧跟期限，是量刑而不是宾语。
+# 这一条不补，（2015）延中刑再终字第9号的申某某会被判成撤销缓刑并罚，
+# 而正确答案是再审改判，与并罚无关（见 docs/12 第 2 节）。
+_PROBATION_WITH_TERM = re.compile(r"缓刑[零〇○一二三四五六七八九十百\d]{1,4}[年月]")
+# 明确以缓刑为宾语的写法。命中即认定撤销的是缓刑，不再看后面有没有期限——
+# 「…缓刑二年的缓刑宣告」里既有「缓刑二年」又有「缓刑宣告」。
+_PROBATION_AS_OBJECT = ("缓刑宣告", "宣告缓刑", "缓刑的执行", "缓刑执行")
 _DEDUCT_CLUES = (
     # 认词根不认整句。真实文书的宾语五花八门：
     #   「与前罪未执行完毕的有期徒刑三年六个月并罚」
@@ -84,23 +101,39 @@ _ALL_CLUES = frozenset(
 )
 
 
-def _revokes(text: str) -> bool:
-    """是否撤销缓刑 / 撤销假释。
+def revokes_probation(text: str) -> bool:
+    """是否撤销缓刑后并罚，即刑法第 77 条。
 
     认结构不认短语：「撤销」与「缓刑/假释」同现即成立。详见 ``_REVOKE_VERBS``
     上方的说明——真实文书写「缓刑宣告」「缓刑…的执行部分」「撤销…假释裁定」，
     短语式匹配必然漏掉其中几种。
+
+    同现之后再看**撤销的宾语**（``_PROBATION_WITH_TERM``）：缓刑后面接期限的，
+    撤销的是载有该缓刑的判项，不是缓刑本身。再审判决书通篇是这种写法，
+    不加这一层，每一起再审改判都会被判成并罚。
+
+    这个函数同时被 :mod:`defendant` 用来判断「撤销缓刑/假释的单列一项」，
+    两处必须用同一套判据——各自演化一次，就会出现「形态判定说不是撤销缓刑、
+    罪名抽取说这一项是撤销缓刑」这种自相矛盾的报告。
     """
-    return any(verb in text for verb in _REVOKE_VERBS) and any(
-        obj in text for obj in _REVOKE_OBJECTS
-    )
+    if not any(verb in text for verb in _REVOKE_VERBS):
+        return False
+    if "假释" in text:
+        # 假释后面不接期限（「假释考验期」是考验期，不是假释的期限），
+        # 无需再做宾语判定。
+        return True
+    if "缓刑" not in text:
+        return False
+    if any(phrase in text for phrase in _PROBATION_AS_OBJECT):
+        return True
+    return _PROBATION_WITH_TERM.search(text) is None
 
 
 def _classify(text: str) -> Optional[CombinationKind]:
     """在一段文本里找形态线索。找不到返回 None，由调用方决定再往哪看。"""
     if not text:
         return None
-    if _revokes(text):
+    if revokes_probation(text):
         return CombinationKind.REVOKE_PROBATION
     if any(clue in text for clue in _DEDUCT_CLUES):
         return CombinationKind.DEDUCT_THEN_MERGE
@@ -132,7 +165,7 @@ def detect_combination(
     """
     if (
         crime_count <= 1
-        and not _revokes(text)
+        and not revokes_probation(text)
         and not any(clue in text for clue in _ALL_CLUES)
     ):
         return CombinationKind.NONE
@@ -153,4 +186,10 @@ def start_hint(kind: CombinationKind) -> str:
     return START_HINTS.get(kind, "")
 
 
-__all__ = ["MANUAL_START_KINDS", "START_HINTS", "detect_combination", "start_hint"]
+__all__ = [
+    "MANUAL_START_KINDS",
+    "START_HINTS",
+    "detect_combination",
+    "revokes_probation",
+    "start_hint",
+]

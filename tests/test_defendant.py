@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from cedas.domain.enums import CustodyType, PrincipalType
+from cedas.domain.enums import CombinationKind, CustodyType, PrincipalType
 from cedas.extract.extractor import extract
 from cedas.ingest.cleaner import clean_text
 
@@ -278,3 +278,48 @@ def test_mismatch_between_declared_and_computed_is_reported_at_extract():
 
     assert result.defendants[0].span.consistency.value == "不一致"
     assert any(w.code == "V1" and "晚 5 天" in w.message for w in result.warnings)
+
+
+def test_reasoning_in_its_own_paragraph_still_breaks_ties():
+    """说理段独立成段时，形态判定仍然拿得到它。
+
+    「本院认为……判决如下：」在有的文书里是一个自然段，在有的文书里是两个独立段。
+    只从主文区间里找说理，后者永远取不到——兜底失效，形态一路回落到第 69 条，
+    而这份判决其实是第 70 条（漏罪），起算日口径完全不同。
+    """
+    text = f"""北京市朝阳区人民法院
+刑事判决书
+{HEAD}
+因涉嫌犯盗窃罪，于2023年3月1日被刑事拘留，同年3月14日被逮捕。
+本院认为，被告人张三在刑罚执行完毕以前，发现判决宣告以前还有其他罪没有判决，
+已经执行的刑期应当计算在新判决决定的刑期以内。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑一年六个月；与前罪并罚，决定执行有期徒刑六年。
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    defendant = _extract(text).defendants[0]
+
+    assert defendant.combination is CombinationKind.MERGE_THEN_DEDUCT
+
+
+def test_absent_verdict_is_a_conclusion_not_a_missing_field():
+    """主文没对某人作出判项，不能报成一串「抽漏了」。
+
+    再审维持原判、二审只改其中一人时，首部照列全部当事人，主文只写改了的那一个。
+    报「罪名缺失 / 主刑未识别 / 无起算日」，承办人会回原文找一个并不存在的刑期，
+    最后手填一个——而正确处置是这个人不出执行通知书。
+    """
+    text = """北京市朝阳区人民法院
+刑事判决书
+（2023）京0105刑初123号
+被告人张三，男，1985年3月2日出生，公民身份号码110101198503021234，汉族。
+被告人李四，男，1984年4月3日出生，公民身份号码110101198404031234，汉族。
+本院认为，被告人张三、李四均构成盗窃罪。
+判决如下：
+一、被告人张三犯盗窃罪，判处有期徒刑一年，并处罚金人民币三千元。
+如不服本判决，可在接到判决书的第二日起十日内提出上诉。
+"""
+    defendants = {d.name.value: d for d in _extract(text).defendants}
+
+    assert defendants["张三"].verdict_absent.is_present is False
+    assert defendants["李四"].verdict_absent.is_present is True

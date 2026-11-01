@@ -41,11 +41,17 @@ class Anchors:
     body_end_index: int
 
 
-def _find_marker(paragraphs: Sequence[ProseParagraph], markers: Sequence[str]) -> Optional[int]:
+def _find_marker(
+    paragraphs: Sequence[ProseParagraph], markers: Sequence[str], *, last: bool = False
+) -> Optional[int]:
+    """找标记所在的段落下标。``last=True`` 取最后一处。"""
+    found: Optional[int] = None
     for index, paragraph in enumerate(paragraphs):
         if any(marker in paragraph.text for marker in markers):
-            return index
-    return None
+            if not last:
+                return index
+            found = index
+    return found
 
 
 def _strip_marker(text: str, markers: Sequence[str]) -> str:
@@ -76,10 +82,18 @@ def text_before_end_marker(text: str) -> str:
 def locate(paragraphs: Sequence[ProseParagraph]) -> Anchors:
     """定位三段区间。
 
+    **取最后一处「判决如下」。** 再审与二审判决书会把原审判决全文引述进来，
+    里面带着原审自己的「本院认为……判决如下：」。取第一处，主文区间就从**原审**
+    的判项开始，一直延伸到「如不服本判决」——原审判项、原审说理全被当成本案主文。
+    （2015）金义刑再初字第1号就是这样：只有两项判项的再审判决，主文区间里却
+    塞进了原审的「判处拘役四个月，缓刑八个月」。
+
+    一审文书通常只有一处标记，取最后一处与取第一处等价，因此这个改动对一审无影响。
+
     Raises:
         AnchorNotFoundError: 找不到「判决如下」。先查清洗结果，别急着改正则。
     """
-    start_index = _find_marker(paragraphs, BODY_START_MARKERS)
+    start_index = _find_marker(paragraphs, BODY_START_MARKERS, last=True)
     if start_index is None:
         raise AnchorNotFoundError(
             "未找到主文锚点「判决如下」。请先用 `cedas clean` 检查清洗后的段落划分。"

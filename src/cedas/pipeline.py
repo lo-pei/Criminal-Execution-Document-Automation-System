@@ -268,6 +268,19 @@ def check_blockers(case: Case, defendant: Defendant, span: SentenceSpan) -> list
     """
     blockers: list[str] = []
 
+    # 这两条是**结论**，不是缺陷，必须排在最前面并直接返回。
+    # 排在字段检查之后，报告里就会是「身份证号缺失 / 罪名缺失 / 主刑未识别 /
+    # 无起算日」一串——每一条都像是抽漏了，承办人拿着去原文找，原文根本没有。
+    # 一份判「免予刑事处罚」的判决被报成「主刑未识别」，一份主文没提到他的
+    # 再审判决被报成「罪名缺失」，都是这个顺序问题造成的。
+    if defendant.exempt.is_present:
+        blockers.append("E-EXEMPT 免予刑事处罚或宣告无罪，无刑罚可执行，不生成执行通知书")
+        return blockers
+
+    if defendant.verdict_absent.is_present:
+        blockers.append("E-NO-VERDICT 本判决主文未对该被告人作出判项，不生成执行通知书")
+        return blockers
+
     for path in REQUIRED_FIELDS:
         if _present(case, defendant, path):
             continue
