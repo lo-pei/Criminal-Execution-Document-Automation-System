@@ -135,7 +135,7 @@ ui  ──▶  pipeline  ──▶  storage / render / extract  ──▶  inges
 # 依赖（开发期）
 python -m pip install -e ".[dev]"
 
-# 跑单元测试（当前 329 项）
+# 跑单元测试（当前 335 项）
 python -m pytest -q
 
 # 命令行自检：解析刑期
@@ -222,7 +222,7 @@ python tools\build_offline.py
 - 文件命名：`{样本编号}__{案号}.txt`，如 `S001__京0105刑初123号.txt`。样本编号与真值表一一对应。
 - 无页码信息 ⇒ 溯源字段 `page` 为 `None`，复核界面显示「段落 N」。PDF 通道接入后自动填充页码。
 
-`data/samples/` 下是 **17 份真实生效判决全文**，用于规则回归（`tests/test_samples.py`）。该目录不入库（见 `SECURITY.md`），新克隆的仓库里只有一份 `README.md` 说明来源与边界，样本用例会 skip 而不是 fail。
+`data/samples/` 下是 **18 份真实生效判决全文**，用于规则回归（`tests/test_samples.py`）。该目录不入库（见 `SECURITY.md`），新克隆的仓库里只有一份 `README.md` 说明来源与边界，样本用例会 skip 而不是 fail。
 
 `examples/` 下只保留一份**合成基线** `S000`（非真实案件），用于跑通命令、界面演示与 TXT/PDF 双通道回归。它同时提供 `.txt` 与 `.pdf` 两份：PDF 由 `tools/make_sample_pdf.py` 从同一份 TXT 排版生成（A4、页眉、页码、大字号标题、按行宽折行），用来断言"同一份文书走两条通道，清洗结果逐段相同"。真实判决是数据库导出的已分段文本，没有软换行与页眉页码，测不到清洗层，所以这份基线不能删。
 
@@ -246,7 +246,7 @@ python tools\build_offline.py
 │   ├── pipeline.py            # 端到端：判决书 → 文书，唯一知道命名与归档的地方
 │   └── ui/                    # 表现层：主窗口、字段表、原文面板、视图模型
 ├── packaging/                 # 打包配置（PyInstaller spec 与入口薄壳）
-├── tests/                     # 单元测试与回归夹具（329 项）
+├── tests/                     # 单元测试与回归夹具（335 项）
 ├── resources/rules/           # 规则库（外部 JSON，可热替换，不随程序版本锁定）
 ├── resources/templates/       # 文书模板说明（模板原件不入库）
 ├── tools/                     # 开发工具脚本（建表、样本体检、离线打包）
@@ -262,7 +262,7 @@ python tools\build_offline.py
 ## 8. 质量保障
 
 ```bash
-python -m pytest -q                      # 329 项单元测试
+python -m pytest -q                      # 335 项单元测试
 python -m ruff check src tests tools packaging   # 静态检查，零告警
 python tools/sample_lint.py data/samples # 样本体检（数据库导出，默认 --source db）
 python tools/sample_lint.py examples --source pdf --min-chars 300  # 合成基线：查版式，不查字数
@@ -272,7 +272,7 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 
 | 保障项 | 机制 |
 | :--- | :--- |
-| 单元测试 | **329 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、真实文书回归、A/B/C/D 组抽取、并罚形态、载明起止日校验、渲染、归档、台账、界面文案与状态判定 |
+| 单元测试 | **335 项**，覆盖清洗、PDF/TXT 双通道一致性、刑期解析、真实文书回归、A/B/C/D 组抽取、并罚形态、载明起止日校验、渲染、归档、台账、界面文案与状态判定 |
 | 静态检查 | `ruff`，`select = E/F/W/I/N/UP/B/SIM/RUF`，零告警 |
 | 离线守门 | `tests/test_offline_guard.py` **静态断言**运行端无网络导入——把"不联网"变成可执行断言，而非文档承诺 |
 | 双通道一致性 | 同一份合成样本同时以 `.txt` 与 `.pdf` 入库，断言两条通道的段落文本、段落类型逐条相同——把 ADR-005 从文档承诺变成测试 |
@@ -311,7 +311,7 @@ python tools/build_offline.py --check-only       # 构建环境闸门
 | `ui/` | 🟡 可用，未上真机 | 待办 / 字段与依据 / 原文定位 / 原地补录已接通 `pipeline`；**未在 Win7 1024×768 实机校字号** |
 | 离线交付 | ✅ 链路验证通过 | 87.5 MB / 1020 文件 / zip 46.3 MB；**交付包需用 3.8.10 重打** |
 
-> **已运行验证**：329 项单元测试全绿、`ruff` 零告警、打包冒烟测试通过、36 份真实判决主文的刑期回归、
+> **已运行验证**：335 项单元测试全绿、`ruff` 零告警、打包冒烟测试通过、36 份真实判决主文的刑期回归、
 > 合成模板端到端出文并通过归档与台账、界面在 1000×690 下逐状态截图核对。
 > **未验证**：清洗命中率、身份字段命中率、**法院真实模板的占位符兼容性**、目标机（Win7 2GB）实机耗时与字号。
 > **不要把"测试通过"当成"功能可用"。**

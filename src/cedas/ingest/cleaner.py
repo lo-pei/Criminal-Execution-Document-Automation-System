@@ -373,7 +373,14 @@ def clean(
         )
         if not starts_new and buffer:
             previous = normalize(buffer[-1].text)
-            starts_new = previous.endswith(tuple(TERMINAL_PUNCT))
+            # 案号行不以句读结尾（「（2011）汴刑终字第28号」以「号」收尾），
+            # 紧跟其后的那一行会被并进来。二审判书里案号下面常常直接就是
+            # 第一个当事人——「（2011）汴刑终字第28号上诉人（原审被告人）
+            # 张某宾（绰号白宾）。」并成一段之后，这一段既不是段首称谓、
+            # 也不再是案号，首部第一个被告人整条丢掉。案号一律独占一段。
+            starts_new = previous.endswith(tuple(TERMINAL_PUNCT)) or bool(
+                _CASE_NO_HINT_RE.search(previous)
+            )
 
         if starts_new:
             flush()

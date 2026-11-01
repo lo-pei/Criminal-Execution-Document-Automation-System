@@ -301,6 +301,59 @@ SAMPLES: tuple[Sample, ...] = (
         ),
         blocked=("E-LIFE", "E-NO-VERDICT"),
     ),
+    Sample(
+        # 二审改判，七名被告人里改判四人、维持三人。三处新结构：
+        #   1. 首部写「上诉人（原审被告人）张某宾（绰号白宾）。」——只认段首
+        #      「被告人」的话，整份文书 0 名被告人（实际 7 名）。
+        #   2. 七个人的起止日挤在同一个括号里用分号隔开，按段落归属全归最后
+        #      那个判项，按「取第一个匹配」谢某龙会拿到张某宾的十一年。
+        #   3. 胡某月、田某甲、孙某甲在主文里只有「维持……第五、六、七项」，
+        #      且姓名出现在刑期注释段里——「主文零出现姓名」判据判不出他们。
+        # 注：首部连性别、出生日期、身份证号都没有，四个改判的人因此都卡在
+        # 字段完整性上；起算日填 2010-02-27 后载明值校验即无 V1，说明七组
+        # 起止日一个都没串到别人身上。
+        file="S018__2011汴刑终字第28号.txt",
+        kind=CRIMINAL_JUDGMENT,
+        people=(
+            Person(
+                "张某宾",
+                ("组织、领导黑社会性质组织", "聚众斗殴", "寻衅滋事", "故意伤害", "破坏生产经营"),
+                132,
+                CombinationKind.MERGE,
+                declared=(date(2010, 2, 27), date(2021, 2, 26)),
+            ),
+            Person(
+                "张某新",
+                ("组织、领导黑社会性质组织", "聚众斗殴", "寻衅滋事", "故意伤害", "破坏生产经营"),
+                120,
+                CombinationKind.MERGE,
+                declared=(date(2010, 2, 27), date(2020, 2, 26)),
+            ),
+            Person(
+                "张某生",
+                ("参加黑社会性质组织", "聚众斗殴", "寻衅滋事", "故意伤害"),
+                96,
+                CombinationKind.MERGE,
+                declared=(date(2010, 2, 28), date(2018, 2, 27)),
+            ),
+            Person(
+                "谢某龙",
+                ("参加黑社会性质组织", "寻衅滋事", "故意伤害"),
+                72,
+                CombinationKind.MERGE,
+                declared=(date(2010, 2, 27), date(2016, 2, 26)),
+            ),
+            Person("胡某月", (), None, verdict_absent=True,
+                   declared=(date(2010, 2, 25), date(2015, 2, 24))),
+            Person("田某甲", (), None, verdict_absent=True,
+                   declared=(date(2010, 2, 28), date(2013, 2, 27))),
+            Person("孙某甲", (), None, verdict_absent=True,
+                   declared=(date(2010, 2, 26), date(2011, 2, 25))),
+        ),
+        # 阻断断言只看刑期类码。改判那四人卡在 E-GENDER／E-BIRTH／E-ID
+        # （二审首部只写称谓、不写身份信息），不在 TERM_BLOCKERS 的覆盖范围内。
+        blocked=("E-NO-VERDICT",),
+    ),
 )
 
 

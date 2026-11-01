@@ -54,7 +54,17 @@ from .combination import detect_combination, revokes_probation
 # 句号也算：简易程序或被告人身份信息不全的判决书写「被告人颜某。曾因犯盗窃罪……」
 # （见（2014）甬余刑初字第633号），姓名后直接断句，只认逗号会让整份文书的
 # 被告人一个都认不出，连带主文归属全部落空。
-_NAME_RE = re.compile(r"^(?:原审)?被告人([\u4e00-\u9fa5]{1,4})[，,。]")
+# 首部对当事人的称谓随审级变化：
+#   一审「被告人张三，男，……」            再审「原审被告人张三。」
+#   二审「上诉人（原审被告人）张三（绰号白宾）。」——只认「被告人」三个字，
+#        整个二审判决书会抽不到一个人，（2011）汴刑终字第28号 七名被告人只剩一个。
+# 姓名后面也不一定是逗号：二审常写「（绰号白宾）」再接句号，
+#        再审写「纪某。」。所以终止符里要有左括号。
+# 「上诉人张三上诉称」这类句子不会误中——姓名后是「上」，不在终止符集合里。
+_NAME_RE = re.compile(
+    r"^(?:上诉人[（(]原审被告人[）)]|原审被告人|上诉人|被告人)"
+    r"([\u4e00-\u9fa5]{1,4})[，,。）（(]"
+)
 _GENDER_RE = re.compile(r"[，,](男|女)[，,]")
 _BIRTH_RE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日出生")
 _ID_RE = re.compile(r"公民身份号码\s*([0-9]{17}[0-9Xx])")
@@ -681,6 +691,50 @@ def _apply_body(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
     defendant.merged_days = parsed.days
 
 
+def _span_named_by(text: str, match: re.Match[str], name: str) -> bool:
+    """这处起止日是否写在 ``name`` 名下。
+
+    （2011）汴刑终字第28号 的七名被告人，起止日挤在同一段的同一个括号里：
+
+        即张某宾自2010年2月27日起至2021年2月26日止；张某新自2010年2月27日
+        起至2020年2月26日止；张某生自……
+
+    按段落归属，这七组日期全归最后那个判项的谢某龙；按「取第一个匹配」，
+    谢某龙会拿到张某宾的 2010-02-27 至 2021-02-26（十一年，而他实际是六年）。
+    载明值只用于校验（ADR-017），校验拿错数据比没有数据更糟：它会让一个
+    正确的推算值被标成 V1 不一致。
+    """
+    head = text[max(0, match.start() - len(name) - 2) : match.start()]
+    return head.rstrip().endswith(name)
+
+
+def _pick_span(
+    text: str, matches: Sequence[re.Match[str]], name: str
+) -> Optional[re.Match[str]]:
+    """从同段的多处起止日里挑出属于 ``name`` 的那一处。
+
+    只有一处时直接用；多处时必须按姓名认，认不出就不取——宁可不给校验值，
+    也不能拿别人的刑期去校验这个人。
+    """
+    if len(matches) == 1:
+        return matches[0]
+    for match in matches:
+        if name and _span_named_by(text, match, name):
+            return match
+    return None
+
+
+def _span_matches(text: str) -> list[re.Match[str]]:
+    """段内所有像刑期起止日的匹配，排除假释/缓刑考验期那一类。"""
+    kept: list[re.Match[str]] = []
+    for match in _SPAN_RE.finditer(text):
+        # 「假释考验期自X起至Y止」与刑期注释段可能同段出现，按上下文排除。
+        if _EXAMINATION_PERIOD in text[max(0, match.start() - 8) : match.start()]:
+            continue
+        kept.append(match)
+    return kept
+
+
 def _apply_text_span(defendant: Defendant, block: Sequence[ProseParagraph]) -> None:
     """抽判决书载明的刑期起止日（C 组 ``text_start`` / ``text_end``）。
 
@@ -692,21 +746,59 @@ def _apply_text_span(defendant: Defendant, block: Sequence[ProseParagraph]) -> N
     等于用一条规则盖住另一条规则；但反过来，推算值也可能是对的、载明值才是笔误，
     所以两边都摆出来，交人裁定。
     """
+    name = str(defendant.name.value) if defendant.name.is_present else ""
     for paragraph in block:
         text = _verdict_text(paragraph.text)
         if not any(marker in text for marker in _SPAN_MARKERS):
             continue
-        for match in _SPAN_RE.finditer(text):
-            # 「假释考验期自X起至Y止」与刑期注释段可能同段出现，按上下文排除。
-            if _EXAMINATION_PERIOD in text[max(0, match.start() - 8) : match.start()]:
+        matches = _span_matches(text)
+        if not matches:
+            continue
+        match = _pick_span(text, matches, name)
+        if match is None:
+            continue
+        start = _to_date(match.group(1), match.group(2), match.group(3))
+        end = _to_date(match.group(4), match.group(5), match.group(6))
+        if start is None or end is None or end < start:
+            continue
+        defendant.text_start = _fv(start, paragraph, "body_span@v1")
+        defendant.text_end = _fv(end, paragraph, "body_span@v1")
+        return
+
+
+def _apply_shared_spans(
+    defendants: Sequence[Defendant],
+    body: Sequence[ProseParagraph],
+) -> None:
+    """把「多人共用一个刑期注释段」的起止日按姓名分回去。
+
+    ``_apply_text_span`` 只在被告人自己分到的段落里找。可是二审判项末尾常把全案
+    七个人的起止日写在同一个括号里，这一段只归属最后一名被告人，其余六人一个都
+    取不到。这里补一轮：只处理同一段里出现**两处以上**起止日的情形，按姓名认领，
+    认不出的不取。
+
+    单处起止日的段落不进这一轮，因此不会把上一个人的刑期分给下一个人。
+    """
+    for paragraph in body:
+        text = _verdict_text(paragraph.text)
+        if not any(marker in text for marker in _SPAN_MARKERS):
+            continue
+        matches = _span_matches(text)
+        if len(matches) < 2:
+            continue
+        for defendant in defendants:
+            if not defendant.name.is_present:
+                continue
+            name = str(defendant.name.value)
+            match = _pick_span(text, matches, name)
+            if match is None:
                 continue
             start = _to_date(match.group(1), match.group(2), match.group(3))
             end = _to_date(match.group(4), match.group(5), match.group(6))
             if start is None or end is None or end < start:
                 continue
-            defendant.text_start = _fv(start, paragraph, "body_span@v1")
-            defendant.text_end = _fv(end, paragraph, "body_span@v1")
-            return
+            defendant.text_start = _fv(start, paragraph, "body_span_shared@v1")
+            defendant.text_end = _fv(end, paragraph, "body_span_shared@v1")
 
 
 _REASONING_MARKERS = (
@@ -785,15 +877,27 @@ def _mark_absent_verdicts(
     像抽取坏了。承办人照着这三条去原文找，找不到，最后会手填一个不存在的新刑期，
     而对这个人的正确处置恰恰是**不出执行通知书**（原判没被撤销，仍按原判执行）。
 
-    判据是「主文里一次都没出现这个名字」，不是「分到的段落为空」：段落归属可能
-    因为同姓、指代写法把段落分错，而「整篇主文没提过这个人」是事实层面的。
+    判据是「主文里有没有针对他的**判项**」，不是「姓名出现过没有」，也不是
+    「分到的段落为空」：段落归属可能因为同姓、指代写法把段落分错，而判项称谓
+    是事实层面的。
+
+    但「姓名出现过」不够。二审判项末尾的刑期注释段会把全案当事人的姓名连着
+    日期列一遍：「即张某宾自2010年2月27日起至2021年2月26日止；……胡某月自
+    2010年2月25日起至2015年2月24日止」——（2011）汴刑终字第28号的胡某月、
+    田某甲、孙某甲三人只在注释段里出现过，主文对他们只有一句「维持……第五、
+    六、七项」，一个判项都没有。按「姓名零出现」判，这三人全都漏标，
+    报告上又是一串「罪名缺失／主刑未识别／无起算日」。
+
+    判项有固定称谓「被告人X犯……」或「被告人X，判处……」，只认这个。
+    真正抽漏的情形（主文写了「被告人X犯盗窃罪，判处……」，规则没抽到）
+    照样会因为「被告人X」在而**不**被标成无判项，仍然报缺陷——这是想要的区分。
     """
-    texts = [paragraph.text for paragraph in body]
+    texts = [_verdict_text(paragraph.text) for paragraph in body]
     for defendant in defendants:
         if not defendant.name.is_present:
             continue
         name = str(defendant.name.value)
-        if any(name in text for text in texts):
+        if any(f"被告人{name}" in text for text in texts):
             continue
         defendant.verdict_absent = _fv(True, body[0] if body else None, "body_absent@v1")
 
@@ -826,6 +930,7 @@ def extract_defendants(
                 reasoning, str(defendant.name.value) if defendant.name.is_present else ""
             ),
         )
+    _apply_shared_spans(defendants, paragraphs[anchors.body])
     _mark_absent_verdicts(defendants, paragraphs[anchors.body])
     return defendants
 
